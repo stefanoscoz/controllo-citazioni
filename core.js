@@ -659,10 +659,15 @@
   function urlRicercaDef(c) {
     var p = parametriDef(c);
     if (!p) return null;
-    var q = ['js_enabled=0', 'tipoComplessitaRicerca=avanzata', 'tipoRicerca=RA', 'device=D', 'ambitoRicerca=' + p.ambito, 'parole=',
-      'tipoCriterioRicerca=0', 'tipo_ord=DATA', 'tipoEstremi=' + encodeURIComponent(p.tipo), 'numero=' + p.numero,
-      'annoDataEmissioneDa=' + p.anno, 'annoDataEmissioneA=' + p.anno, 'ente=' + encodeURIComponent(p.ente).replace(/%20/g, '+')];
-    if (p.ambito === 'G') q.push('ricercaAreaRiservata=false');
+    // DEF completa la ricerca solo con tutti i campi del modulo, anche vuoti
+    var e = function (v) { return encodeURIComponent(v).replace(/%20/g, '+'); };
+    var q = (p.ambito === 'G'
+      ? ['js_enabled=0', 'tipoComplessitaRicerca=avanzata', 'ricercaAreaRiservata=false', 'tipoRicerca=RA', 'device=D', 'ambitoRicerca=G']
+      : ['js_enabled=0', 'tipoComplessitaRicerca=avanzata', 'tipoRicerca=RA', 'device=D', 'ambitoRicerca=P']).concat([
+      'parole=', 'ricercaNelTitolo=', 'tipoCriterioRicerca=0', 'tipo_ord=DATA', 'tipoEstremi=' + e(p.tipo), 'numero=' + p.numero,
+      'giornoDataEmissioneDa=', 'meseDataEmissioneDa=', 'annoDataEmissioneDa=' + p.anno, 'dataEmissioneDa=',
+      'giornoDataEmissioneA=', 'meseDataEmissioneA=', 'annoDataEmissioneA=' + p.anno, 'dataEmissioneA=',
+      'ente=' + e(p.ente), 'superEnte=', 'materiaFiscale=', 'classificazioneArgomento=']);
     return DEF_BASE + (p.ambito === 'G' ? 'executeAdvancedGiurisprudenzaSearch.do?' : 'executeAdvancedPrassiSearch.do?') + q.join('&');
   }
 
