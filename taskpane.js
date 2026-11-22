@@ -6,7 +6,7 @@
   var API_NORMATTIVA = 'https://api.normattiva.it/t/normattiva.api/bff-opendata/v1';
   var PERCORSO_DETTAGLIO = '/api/v1/atto/dettaglio-atto-urn';
   var PREFISSO_COMMENTO = '[Controllo citazioni] ';
-  var COLORI = { ok: '#17694D', mod: '#8A5100', dub: '#5B3FA8', ko: '#B42318', nv: '#4B5563' };
+  var COLORI = { ok: '#17694D', mod: '#8A5100', data: '#8A5100', dub: '#5B3FA8', ko: '#B42318', nv: '#4B5563' };
 
   var stato = {
     citazioni: [], dataRif: null, ora: null, filtro: 'rivedere',
@@ -37,7 +37,29 @@
   }
 
   // ------------------------------------------------------------- Normattiva
-  function baseApi() { return (leggiImpostazione('proxy') || API_NORMATTIVA).replace(/\/+$/, ''); }
+  // Normattiva si interroga sempre direttamente; il Worker serve solo per DEF e IA
+  function baseApi() { return API_NORMATTIVA; }
+  function workerUrl() { return (leggiImpostazione('proxy') || '').replace(/\/+$/, ''); }
+
+  // ------------------------------------------------------------- DEF (MEF)
+  function chiamaDef(c) {
+    var p = CC.parametriDef(c);
+    var chiave = 'def|' + JSON.stringify(p);
+    if (stato.cache[chiave]) return Promise.resolve(stato.cache[chiave]);
+    var q = Object.keys(p).map(function (k) { return k + '=' + encodeURIComponent(p[k]); }).join('&');
+    return fetch(workerUrl() + '/def?' + q, { headers: { 'Accept': 'application/json' } })
+      .then(function (res) { return res.json().catch(function () { return { errore: 'HTTP ' + res.status }; }); })
+      .catch(function () { return { errore: 'Worker non raggiungibile' }; })
+      .then(function (r) { if (!r.errore) stato.cache[chiave] = r; return r; });
+  }
+
+  function chiamaMassima(id) {
+    var chiave = 'massima|' + id;
+    if (stato.cache[chiave]) return Promise.resolve(stato.cache[chiave]);
+    return fetch(workerUrl() + '/def/massima?id=' + encodeURIComponent(id), { headers: { 'Accept': 'application/json' } })
+      .then(function (res) { return res.json(); })
+      .then(function (r) { if (!r.errore) stato.cache[chiave] = r; return r; });
+  }
 
   function chiamaNormattiva(urn) {
     if (stato.cache[urn]) return Promise.resolve(stato.cache[urn]);
@@ -88,9 +110,11 @@
       return chiamaNormattiva(c.atto.urn + '!vig=' + stato.dataRif).then(function (r) { return CC.valutaAtto(c, r); });
     }
     var formale = CC.esitoFormale(c);
+    if (formale && (c.genere === 'sentenza' || c.genere === 'prassi') && formale.esito !== 'ko' && workerUrl() && CC.parametriDef(c)) {
+      return chiamaDef(c).then(function (r) { return CC.valutaDef(c, r); });
+    }
     if (formale) {
       if (c.genere === 'norma' && c.atto && !c.atto.errore) formale.link = CC.linkNormattiva(CC.urnArticolo(c), stato.dataRif);
-      if (c.genere === 'sentenza') formale.link = 'https://www.italgiure.giustizia.it/sncass/';
       return Promise.resolve(formale);
     }
     var urnArt = CC.urnArticolo(c);
@@ -122,7 +146,7 @@
   }
 
   // ----------------------------------------------------- pertinenza (IA)
-  function iaAttiva() { return leggiImpostazione('ia') === '1' && !!leggiImpostazione('proxy'); }
+  function iaAttiva() { return leggiImpostazione('ia') === '1' && !!workerUrl(); }
 
   function fraseAttorno(c) {
     var p = (stato.paragrafi && stato.paragrafi[c.paragrafo]) ? stato.paragrafi[c.paragrafo].testo : c.testo;
@@ -130,26 +154,35 @@
     return CC.pseudonimizza(p.slice(ini, fin));
   }
 
-  function chiamaPertinenza(c, v) {
+  function chiamaPertinenza(c, testoFonte) {
     var corpo = {
       frase: fraseAttorno(c),
       citazione: c.testo,
-      testoNorma: String(v.estrattoRif || '').slice(0, 6000),
+      testoNorma: String(testoFonte || '').slice(0, 6000),
       dataRiferimento: stato.dataRif
     };
-    return fetch(baseApi() + '/pertinenza', {
+    return fetch(workerUrl() + '/pertinenza', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(corpo)
     }).then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); });
   }
 
   function applicaPertinenza(c, v) {
-    if (!iaAttiva() || c.genere !== 'norma' || !v.estrattoRif || (v.esito !== 'ok' && v.esito !== 'mod')) return Promise.resolve(v);
-    return chiamaPertinenza(c, v).then(function (ia) {
+    if (!iaAttiva() || (v.esito !== 'ok' && v.esito !== 'mod')) return Promise.resolve(v);
+    var fonte;
+    if (c.genere === 'norma' && v.estrattoRif) fonte = Promise.resolve(v.estrattoRif);
+    else if (c.genere === 'sentenza' && v.def && v.def.id) {
+      fonte = chiamaMassima(v.def.id).then(function (m) { return m && m.massima ? (m.intitolazione ? m.intitolazione + '. ' : '') + 'Massima: ' + m.massima : null; });
+    } else return Promise.resolve(v);
+    return fonte.then(function (testoFonte) {
+      if (!testoFonte) return v;
+      return chiamaPertinenza(c, testoFonte).then(function (ia) {
       var giudizio = ia && ia.giudizio;
-      var nota = 'Pertinenza (IA, da validare): ' + (giudizio === 'coerente' ? 'coerente' : giudizio === 'non_pertinente' ? 'la norma non sembra dire ciò che la frase afferma' : 'dubbia') + (ia.motivazione ? ' — ' + ia.motivazione : '');
+      var cosa = c.genere === 'sentenza' ? 'la massima' : 'la norma';
+      var nota = 'Pertinenza (IA, da validare): ' + (giudizio === 'coerente' ? 'coerente' : giudizio === 'non_pertinente' ? cosa + ' non sembra dire ciò che la frase afferma' : 'dubbia') + (ia.motivazione ? ' — ' + ia.motivazione : '');
       var out = Object.assign({}, v, { ia: ia, motivo: v.motivo.replace(' Pertinenza non valutata in questa versione.', '') + ' ' + nota });
       if (giudizio === 'non_pertinente' || giudizio === 'dubbia') out.esito = v.esito === 'mod' ? 'mod' : 'dub';
       return out;
+      });
     }).catch(function (e) {
       return Object.assign({}, v, { motivo: v.motivo + ' Pertinenza (IA) non disponibile: ' + (e && e.message ? e.message : 'errore') + '.' });
     });
@@ -241,16 +274,16 @@
   }
 
   function conteggio() {
-    var n = { ok: 0, mod: 0, dub: 0, ko: 0, nv: 0 };
+    var n = { ok: 0, mod: 0, data: 0, dub: 0, ko: 0, nv: 0 };
     stato.citazioni.forEach(function (c) { n[c.verifica.esito]++; });
     return n;
   }
 
   function testoNota(validata) {
     var n = conteggio();
-    var esiti = [n.ok + ' verificate', n.mod + ' modificate', n.dub + ' con pertinenza dubbia', n.nv + ' non verificabili', n.ko + ' non trovate'].join(', ');
+    var esiti = [n.ok + ' verificate', n.mod + ' modificate', n.data + ' con data diversa', n.dub + ' con pertinenza dubbia', n.nv + ' non verificabili', n.ko + ' non trovate'].join(', ');
     var riga1 = 'Nota di verifica — citazioni controllate il ' + formatoData(oggiISO()) + ' alle ' + stato.ora +
-      ' con Controllo citazioni 0.3; data di riferimento ' + formatoData(stato.dataRif) + '. Esiti: ' + esiti + '.';
+      ' con Controllo citazioni 0.4; data di riferimento ' + formatoData(stato.dataRif) + '. Esiti: ' + esiti + '.';
     var nome = leggiImpostazione('nome') || '[professionista]';
     var riga2 = validata
       ? 'Verifica del professionista: eseguita da ' + nome + ' il ' + formatoData(oggiISO()) + '.'
@@ -287,7 +320,7 @@
         var valori = [['#', 'Citazione', 'Esito', 'Motivo', 'Fonte']];
         stato.citazioni.forEach(function (c) {
           var v = c.verifica;
-          valori.push([String(c.id), c.testo, CC.ESITI[v.esito].etichetta + (v.bloccante ? ' (bloccante)' : ''), v.motivo, v.urn || (c.genere === 'norma' ? '—' : 'controllo formale')]);
+          valori.push([String(c.id), c.testo, CC.ESITI[v.esito].etichetta + (v.bloccante ? ' (bloccante)' : ''), v.motivo, v.urn || (v.def ? 'DEF (MEF): ' + v.def.estremi : (c.genere === 'norma' ? '—' : 'controllo formale'))]);
         });
         var body = ctx.document.body;
         var titolo = body.insertParagraph('Registro di verifica delle citazioni — ' + formatoData(oggiISO()) + ', ' + stato.ora + ' — data di riferimento ' + formatoData(stato.dataRif), 'End');
@@ -342,7 +375,8 @@
       mod: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
       dub: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14"/>',
       ko: '<path d="M18 6 6 18M6 6l12 12"/>',
-      nv: '<path d="M5 12h14"/>'
+      nv: '<path d="M5 12h14"/>',
+      data: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>'
     };
     return '<span class="chip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       icone[esito] + '</svg>' + esc(CC.ESITI[esito].etichetta) + '</span>';
@@ -368,11 +402,11 @@
     $('fRivedere').textContent = 'Da rivedere (' + daRivedere + ')';
     $('fTutte').textContent = 'Tutte (' + tot + ')';
 
-    var ordine = ['ko', 'dub', 'mod', 'nv', 'ok'];
+    var ordine = ['ko', 'data', 'dub', 'mod', 'nv', 'ok'];
     $('barra').innerHTML = ordine.map(function (k) {
       return n[k] ? '<div style="flex:' + n[k] + ';background:' + COLORI[k] + '"></div>' : '';
     }).join('');
-    $('conteggi').innerHTML = ordine.map(function (k) {
+    $('conteggi').innerHTML = ordine.filter(function (k) { return n[k] || k !== 'data'; }).map(function (k) {
       return '<span style="color:' + COLORI[k] + '">' + n[k] + ' ' + esc(CC.ESITI[k].etichetta) + '</span>';
     }).join('');
 
@@ -382,17 +416,29 @@
       return '<article class="voce esito-' + v.esito + (v.bloccante ? ' bloccante' : '') + '">' +
         '<div class="voce-testa"><span class="numero">' + c.id + '</span>' + chip(v.esito) +
         (v.bloccante ? '<span class="chip chip-blocco">Bloccante</span>' : '') +
+        (v.def ? '<span class="fonte">DEF · MEF</span>' : '') +
         '<span class="sezione">' + esc(c.sezione || '') + '</span></div>' +
         '<div class="voce-titolo">' + esc(c.testo) + '</div>' +
-        '<div class="voce-motivo">' + esc(v.motivo) + '</div>' +
+        (v.def && v.esito === 'ok' ? '<div class="trovato"><strong>' + esc(v.def.estremi) + '</strong>' + (v.def.titolo ? '<br>' + esc(v.def.titolo) : '') + '</div>' +
+          (v.note && v.note.length ? '<div class="voce-motivo" style="color:#8A5100">' + esc(v.note.join('. ')) + '.</div>' : '') +
+          (v.ia ? '<div class="voce-motivo">' + esc(v.motivo.slice(v.motivo.indexOf('Pertinenza (IA'))) + '</div>' : '')
+          : '<div class="voce-motivo">' + esc(v.motivo) + '</div>') +
         '<div class="voce-azioni">' +
         '<button type="button" data-vai="' + c.id + '">Vai al testo</button>' +
-        '<button type="button" data-dettaglio="' + c.id + '">Dettaglio</button>' +
-        (v.link ? '<a href="' + esc(v.link) + '" target="_blank" rel="noopener">Apri fonte</a>' : '') +
+        '<button type="button" data-dettaglio="' + c.id + '">' + (v.def && c.genere === 'sentenza' ? 'Massima e dettaglio' : 'Dettaglio') + '</button>' +
+        linkFonti(c, v) +
         '</div></article>';
     }).join('') : '<p class="vuoto">Nessuna citazione da rivedere.</p>';
 
     aggiornaPulsanteSegna();
+  }
+
+  function linkFonti(c, v) {
+    var h = '';
+    if (v.linkDoc) h += '<a href="' + esc(v.linkDoc) + '" target="_blank" rel="noopener">Apri su DEF</a>';
+    else if (v.linkDef) h += '<a href="' + esc(v.linkDef) + '" target="_blank" rel="noopener">Cerca su DEF</a>';
+    if (v.link) h += '<a href="' + esc(v.link) + '" target="_blank" rel="noopener">' + (c.genere === 'sentenza' ? 'SentenzeWeb' : 'Apri su Normattiva') + '</a>';
+    return h;
   }
 
   function renderConfronto(seg) {
@@ -417,14 +463,29 @@
     if (v.confronto) {
       h += '<div class="det-blocco"><h3>Confronto: vigente al ' + esc(formatoData(stato.dataRif)) + ' → oggi</h3><div class="estratto">' + renderConfronto(v.confronto) + '</div></div>';
     } else if (v.estrattoRif) {
-      h += '<div class="det-blocco"><h3>Testo vigente al ' + esc(formatoData(stato.dataRif)) + '</h3><div class="estratto">' + esc(v.estrattoRif.slice(0, 2500)) + '</div></div>';
+      h += '<div class="det-blocco"><h3>Testo vigente al ' + esc(formatoData(stato.dataRif)) + '</h3><div class="estratto">' + conSegni(esc(v.estrattoRif.slice(0, 2500))).replace(/\n/g, '<br>') + '</div></div>';
+    }
+    if (v.def) {
+      h += '<div class="det-blocco"><h3>In DEF (MEF)</h3><div class="trovato"><strong>' + esc(v.def.estremi) + '</strong>' + (v.def.titolo ? '<br>' + esc(v.def.titolo) : '') + '</div></div>';
+      if (c.genere === 'sentenza') h += '<div class="det-blocco" id="boxMassima"><h3>Massima</h3><p class="aiuto">Caricamento della massima…</p></div>';
+    }
+    if (v.candidati && v.candidati.length) {
+      h += '<div class="det-blocco"><h3>Documenti trovati in DEF</h3>' + v.candidati.map(function (x) { return '<div class="trovato"><a href="' + esc(x.link) + '" target="_blank" rel="noopener">' + esc(x.estremi) + '</a>' + (x.titolo ? '<br>' + esc(x.titolo) : '') + '</div>'; }).join('') + '</div>';
     }
     if (v.urn) h += '<div class="det-blocco"><h3>Identificativo</h3><a class="urn" href="' + esc(v.link) + '" target="_blank" rel="noopener">' + esc(v.urn) + '</a>' +
       '<p class="aiuto">Fonte: Normattiva (IPZS), testo non ufficiale. Consultata oggi alle ' + esc(stato.ora) + '.</p></div>';
-    else if (v.link) h += '<div class="det-blocco"><a href="' + esc(v.link) + '" target="_blank" rel="noopener">Apri la fonte per verificare</a></div>';
+    if (!v.urn) h += '<div class="voce-azioni">' + linkFonti(c, v) + '</div>' + (v.def || v.linkDef ? '<p class="aiuto">Fonte: Documentazione Economica e Finanziaria (MEF, Ce.R.D.E.F.). DEF raccoglie una selezione della giurisprudenza tributaria.</p>' : '');
     h += '<div class="riga-pulsanti"><button type="button" class="secondario" data-vai="' + c.id + '">Vai al testo</button></div></article>';
     $('dettaglio').innerHTML = h;
     mostra('vistaDettaglio');
+    if (v.def && c.genere === 'sentenza' && workerUrl()) {
+      chiamaMassima(v.def.id).then(function (m) {
+        var box = $('boxMassima'); if (!box) return;
+        box.innerHTML = '<h3>Massima</h3>' + (m && m.massima
+          ? (m.intitolazione ? '<p class="aiuto" style="font-weight:600;color:#22303F">' + esc(m.intitolazione) + '</p>' : '') + '<div class="estratto">' + esc(m.massima) + '</div><p class="aiuto">Massima redatta a cura del Ce.R.D.E.F.</p>'
+          : '<p class="aiuto">Massima non disponibile in DEF per questo provvedimento.</p>');
+      }).catch(function () { var box = $('boxMassima'); if (box) box.innerHTML = '<h3>Massima</h3><p class="aiuto">Massima non raggiungibile: apri il documento su DEF.</p>'; });
+    }
   }
 
   function aggiornaPulsanteSegna() {
@@ -782,7 +843,16 @@
           ' (L. 190/2014 art. 1 al 31/12/2022 → in vigore ' + (r.inizioVig ? 'dal ' + formatoData(r.inizioVig) : '?') + (r.fineVig ? ' al ' + formatoData(r.fineVig) : ' ad oggi') + ')');
       });
     }).then(function () {
-      out.textContent = righe.join('\n') + '\nServizio: ' + baseApi();
+      if (!workerUrl()) { righe.push('— Worker non impostato: prassi e sentenze solo con «Cerca su DEF».'); return; }
+      return fetch(workerUrl() + '/stato').then(function (r) { return r.json(); }).then(function (st) {
+        righe.push('✓ Worker raggiungibile' + (st.ia ? ' · chiave API presente' : ' · chiave API assente (IA non disponibile)'));
+        return chiamaDef({ genere: 'prassi', tipo: 'circolare', numero: 32, anno: 2023 }).then(function (r) {
+          var ok = r && !r.errore && r.risultati && r.risultati.some(function (x) { return /n\. 32 - Agenzia delle Entrate/.test(x.estremi); });
+          righe.push(ok ? '✓ DEF: circolare 32/E/2023 trovata' : '✗ DEF: ' + ((r && r.errore) || 'risposta inattesa'));
+        });
+      }).catch(function () { righe.push('✗ Worker non raggiungibile: controlla l\'indirizzo e che ORIGINE nel Worker sia la tua pagina GitHub Pages.'); });
+    }).then(function () {
+      out.textContent = righe.join('\n') + '\nNormattiva: diretta · Worker: ' + (workerUrl() || 'non impostato');
     });
   }
 

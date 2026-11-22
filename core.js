@@ -178,17 +178,58 @@
   // ---------------------------------------------------------------------------
   var RE_ART = new RegExp('\\b(art(?:icol[oi]|t)?)\\.?\\s*(\\d+(?:[\\s-]?' + LATINI + ')?)(?![\\d/])', 'gi');
   var RE_ATTO_SOLO = new RegExp('(?:^|[^a-zà-ù.])(' + TIPI_ATTO + ')', 'gi');
-  var RE_CASS = new RegExp(
-    '\\bCass(?:azione)?\\.?(?:\\s*(?:civ|pen|trib)\\.?)?\\s*,?' +
-    '(?:\\s*(?:sez(?:ione)?\\.?|ss\\.?\\s*uu\\.?|sezioni unite)\\s*(?:un(?:ite)?\\.?|[IVX]+|\\d+|trib(?:utaria)?\\.?|lav(?:oro)?\\.?)?\\s*,?)?' +
-    '(?:\\s*(?:sent(?:enza)?|ord(?:inanza)?)\\.?\\s*,?)?' +
-    '(?:\\s*(\\d{1,2})\\s+' + MESI_RE + '\\s+(\\d{4})\\s*,?)?' +
-    '\\s*n\\.\\s*(\\d+)(?:\\s*\\/\\s*(\\d{4}))?', 'gi');
-  var RE_PRASSI = new RegExp(
-    '\\b(circ(?:olare)?|ris(?:oluzione)?|risposta(?: a interpello)?)\\.?' +
-    '(?:\\s*(?:dell[\'’]\\s*)?(?:Agenzia delle Entrate|AdE|Ag\\.\\s*Entrate))?' +
-    '\\s*n\\.\\s*(\\d+)(?:\\s*\\/\\s*E)?' +
-    '(?:\\s*(?:del|\\/)\\s*(?:(\\d{1,2})\\s+' + MESI_RE + '\\s+)?(\\d{4}))?', 'gi');
+  // --- giurisprudenza e prassi: lettura a componenti (ordine libero)
+  var RE_ANCORA_CASS = /\b(?:Corte\s+(?:Suprema\s+)?di\s+)?Cass(?:azione)?\.?/gi;
+  var RE_ANCORA_MERITO = /\b(C\.?\s?G\.?\s?T\.?|Corte\s+di\s+giustizia\s+tributaria|C\.?\s?T\.?\s?P\.?|C\.?\s?T\.?\s?R\.?|Comm(?:\.|issione)\s+trib(?:\.|utaria)\s+(?:prov(?:\.|inciale)|reg(?:\.|ionale)))(?![a-z])/gi;
+  var RE_ANCORA_PRASSI = /\b(circolare|circ\.|risoluzione|ris\.|risposta\s+(?:ad?\s+)?interpello|risposta|interpello)(?![a-z])/gi;
+  var C_SEP = /\s*[,;]?\s*/y;
+  var C_CIV = /(?:civ|pen|trib)\.?(?![a-z])/iy;
+  var C_SEZ = /(?:sez(?:ione)?\.?\s*(?:un(?:ite)?\.?|[IVX]+|\d+|trib(?:utaria)?\.?|lav(?:oro)?\.?|civ(?:ile)?\.?)|ss\.?\s*uu\.?|sezioni\s+unite)/iy;
+  var C_TIPO = /(sent(?:enza)?|ord(?:inanza)?)\.?(?![a-z])/iy;
+  var C_DATA_T = new RegExp('(?:del\\s+)?(\\d{1,2})(?:°|º)?\\s+' + MESI_RE + '\\s+(\\d{4})', 'iy');
+  var C_DATA_N = /(?:del\s+)?(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})(?!\d)/iy;
+  var C_NUM = /(?:n(?:r|um)?\.?\s*)?(\d{1,6})(?:\s*\/\s*(E))?(?:\s*\/\s*(\d{4}|\d{2})(?!\d))?/iy;
+  var C_ANNO = /del(?:l['’]\s*anno|\s+anno)?\s+(\d{4})(?!\d|\s*[\/.\-])/iy;
+  var C_ENTE = /(?:dell['’]\s*|della\s+)?(?:Agenzia\s+delle\s+Entrate|AdE|Ag\.\s*Entrate|A\.?\s?d\.?\s?E\.?)(?![a-z])/iy;
+  var C_GRADO = /(?:di\s+)?(I|II|1°|2°|1|2|primo|secondo)\s+grado/iy;
+  var C_LUOGO = /(?:di|del|della|dell['’]|delle|per\s+la|-)?\s*([A-ZÀ-Ù][a-zà-ù'’]+(?:[\s-](?:[A-ZÀ-Ù][a-zà-ù'’]+|d['’]Aosta|Emilia|Venezia\s+Giulia|Alto\s+Adige))?)/y;
+  var NUM_ROMANI = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7 };
+
+  // legge numero, anno, data, tipo e sezione a partire da pos, in qualunque ordine
+  function leggiComponenti(testo, pos, cosa) {
+    var r = { pos: pos };
+    for (var giri = 0; giri < 8; giri++) {
+      var m, p = r.pos;
+      var sep = provaRegex(C_SEP, testo, p); var q = p + (sep ? sep[0].length : 0);
+      if (cosa.civ && (m = provaRegex(C_CIV, testo, q))) { r.pos = q + m[0].length; continue; }
+      if (cosa.ente && (m = provaRegex(C_ENTE, testo, q))) { r.ente = true; r.pos = q + m[0].length; continue; }
+      if (cosa.sez && !r.sezione && (m = provaRegex(C_SEZ, testo, q))) { r.sezione = m[0]; r.pos = q + m[0].length; continue; }
+      if (cosa.tipo && !r.tipo && (m = provaRegex(C_TIPO, testo, q))) { r.tipo = /^o/i.test(m[1]) ? 'Ordinanza' : 'Sentenza'; r.pos = q + m[0].length; continue; }
+      if (!r.data && ((m = provaRegex(C_DATA_T, testo, q)) || (m = provaRegex(C_DATA_N, testo, q)))) {
+        var g = parseInt(m[1], 10), mm = isNaN(parseInt(m[2], 10)) ? MESI[m[2].toLowerCase()] : parseInt(m[2], 10), a = parseInt(m[3], 10);
+        r.data = { g: g, m: mm, a: a, valida: dataValida(g, mm, a), iso: a + '-' + pad(mm) + '-' + pad(g) };
+        r.pos = q + m[0].length; continue;
+      }
+      if (r.numero && !r.anno && (m = provaRegex(C_ANNO, testo, q))) { r.anno = parseInt(m[1], 10); r.pos = q + m[0].length; continue; }
+      if (!r.numero && (m = provaRegex(C_NUM, testo, q)) && /^(?:n|nr|num)/i.test(m[0]) || (!r.numero && m && m[3])) {
+        r.numero = parseInt(m[1], 10); if (m[3]) r.annoNumero = annoQuattroCifre(m[3]);
+        r.pos = q + m[0].length; continue;
+      }
+      break;
+    }
+    if (r.annoNumero && !r.anno) r.anno = r.annoNumero;
+    if (!r.anno && r.data) r.anno = r.data.a;
+    return r;
+  }
+
+  function sezioneNumero(s) {
+    if (!s) return null;
+    var m = /(\d+)|\b([IVX]+)\b/i.exec(s);
+    if (m) return m[1] ? parseInt(m[1], 10) : NUM_ROMANI[m[2].toLowerCase()] || null;
+    if (/trib/i.test(s)) return 5;
+    if (/un|uu/i.test(s)) return 'SU';
+    return null;
+  }
 
   /**
    * Estrae le citazioni da un elenco di paragrafi.
@@ -259,30 +300,53 @@
       }
 
       // 3b. Cassazione
-      RE_CASS.lastIndex = 0;
-      while ((m = RE_CASS.exec(testo)) !== null) {
-        var cs = { genere: 'sentenza', testo: m[0].replace(/[\s,;:]+$/, ''), inizio: m.index };
-        cs.fine = cs.inizio + cs.testo.length;
-        cs.numero = parseInt(m[4], 10);
-        if (m[1] && m[2] && m[3]) {
-          cs.giorno = parseInt(m[1], 10); cs.mese = MESI[m[2].toLowerCase()]; cs.anno = parseInt(m[3], 10);
-          cs.dataValida = dataValida(cs.giorno, cs.mese, cs.anno);
-          if (m[5] && parseInt(m[5], 10) !== cs.anno) cs.avviso = 'Anno del numero diverso dall\'anno della data';
-        } else if (m[5]) {
-          cs.anno = parseInt(m[5], 10); cs.dataValida = null;
-        }
+      RE_ANCORA_CASS.lastIndex = 0;
+      while ((m = RE_ANCORA_CASS.exec(testo)) !== null) {
+        var k = leggiComponenti(testo, m.index + m[0].length, { civ: true, sez: true, tipo: true });
+        if (!k.numero) continue;
+        var cs = { genere: 'sentenza', corte: 'cassazione', inizio: m.index, numero: k.numero, anno: k.anno || null,
+          tipoProvv: k.tipo || null, sezione: k.sezione || null, sezioneN: sezioneNumero(k.sezione) };
+        cs.testo = testo.slice(m.index, k.pos).replace(/[\s,;:]+$/, ''); cs.fine = cs.inizio + cs.testo.length;
+        if (k.data) {
+          cs.giorno = k.data.g; cs.mese = k.data.m; cs.dataValida = k.data.valida; cs.data = k.data.valida ? k.data.iso : null;
+          if (k.annoNumero && k.annoNumero !== k.data.a) cs.avviso = 'Anno del numero diverso dall\'anno della data';
+        } else cs.dataValida = null;
         trovate.push(cs);
+        RE_ANCORA_CASS.lastIndex = Math.max(k.pos, RE_ANCORA_CASS.lastIndex);
       }
 
-      // 3c. Prassi
-      RE_PRASSI.lastIndex = 0;
-      while ((m = RE_PRASSI.exec(testo)) !== null) {
-        var cp = { genere: 'prassi', testo: m[0].replace(/[\s,;:]+$/, ''), inizio: m.index };
-        cp.fine = cp.inizio + cp.testo.length;
-        cp.tipo = m[1].toLowerCase().indexOf('circ') === 0 ? 'circolare' : (m[1].toLowerCase().indexOf('ris') === 0 && m[1].toLowerCase().indexOf('risposta') !== 0 ? 'risoluzione' : 'risposta a interpello');
-        cp.numero = parseInt(m[2], 10);
-        if (m[3] && m[4]) cp.dataValida = dataValida(parseInt(m[3], 10), MESI[m[4].toLowerCase()], parseInt(m[5], 10));
+      // 3b-bis. Giudici tributari di merito (CGT, CTP, CTR)
+      RE_ANCORA_MERITO.lastIndex = 0;
+      while ((m = RE_ANCORA_MERITO.exec(testo)) !== null) {
+        var pm = m.index + m[0].length, grado = null, luogo = null, mg, ml2;
+        var ab = m[1].replace(/[\s.]/g, '').toUpperCase();
+        if (ab === 'CTP' || /prov/i.test(m[1])) grado = 1;
+        if (ab === 'CTR' || /reg/i.test(m[1])) grado = 2;
+        var sp = provaRegex(C_SEP, testo, pm); if (sp) pm += sp[0].length;
+        if ((mg = provaRegex(C_GRADO, testo, pm))) { grado = /^(I|1|1°|primo)$/i.test(mg[1]) ? 1 : 2; pm += mg[0].length; }
+        sp = provaRegex(C_SEP, testo, pm); if (sp) pm += sp[0].length;
+        if ((ml2 = provaRegex(C_LUOGO, testo, pm)) && !/^(Sez|Sent|Ord|n)$/i.test(ml2[1])) { luogo = ml2[1]; pm += ml2[0].length; }
+        var km = leggiComponenti(testo, pm, { sez: true, tipo: true });
+        if (!km.numero) continue;
+        var cm = { genere: 'sentenza', corte: 'merito', grado: grado, luogo: luogo, inizio: m.index, numero: km.numero, anno: km.anno || null, tipoProvv: km.tipo || null };
+        cm.testo = testo.slice(m.index, km.pos).replace(/[\s,;:]+$/, ''); cm.fine = cm.inizio + cm.testo.length;
+        if (km.data) { cm.dataValida = km.data.valida; cm.data = km.data.valida ? km.data.iso : null; } else cm.dataValida = null;
+        trovate.push(cm);
+        RE_ANCORA_MERITO.lastIndex = Math.max(km.pos, RE_ANCORA_MERITO.lastIndex);
+      }
+
+      // 3c. Prassi dell'Agenzia delle Entrate
+      RE_ANCORA_PRASSI.lastIndex = 0;
+      while ((m = RE_ANCORA_PRASSI.exec(testo)) !== null) {
+        var kp = leggiComponenti(testo, m.index + m[0].length, { ente: true });
+        if (!kp.numero) continue;
+        var t0 = m[1].toLowerCase();
+        var cp = { genere: 'prassi', inizio: m.index, numero: kp.numero, anno: kp.anno || null,
+          tipo: /^circ/.test(t0) ? 'circolare' : (/^ris(\.|oluzione)/.test(t0) ? 'risoluzione' : 'risposta a interpello') };
+        cp.testo = testo.slice(m.index, kp.pos).replace(/[\s,;:]+$/, ''); cp.fine = cp.inizio + cp.testo.length;
+        if (kp.data) { cp.dataValida = kp.data.valida; cp.data = kp.data.valida ? kp.data.iso : null; } else cp.dataValida = null;
         trovate.push(cp);
+        RE_ANCORA_PRASSI.lastIndex = Math.max(kp.pos, RE_ANCORA_PRASSI.lastIndex);
       }
 
       trovate.sort(function (a, b) { return a.inizio - b.inizio; });
@@ -300,6 +364,7 @@
   // ---------------------------------------------------------------------------
   var ESITI = {
     ok: { etichetta: 'Verificata', gravita: 4 },
+    data: { etichetta: 'Data diversa', gravita: 1 },
     mod: { etichetta: 'Modificata', gravita: 2 },
     dub: { etichetta: 'Pertinenza dubbia', gravita: 1 },
     ko: { etichetta: 'Non trovata', gravita: 0 },
@@ -309,11 +374,14 @@
   function esitoFormale(c) {
     if (c.genere === 'sentenza') {
       if (c.dataValida === false) return { esito: 'ko', bloccante: true, motivo: 'La data indicata non esiste: gli estremi non sono validi. Possibile citazione generata da IA.' };
-      return { esito: 'nv', motivo: 'Giurisprudenza non ancora collegata in questa versione: verifica su SentenzeWeb.' + (c.avviso ? ' ' + c.avviso + '.' : '') };
+      if (!c.anno) return { esito: 'nv', motivo: 'Manca l\'anno del provvedimento: impossibile cercarlo.', link: c.corte === 'cassazione' ? LINK_SENTENZEWEB : null };
+      return { esito: 'nv', motivo: (c.corte === 'merito' ? 'Sentenza di merito: ' : '') + 'verifica con «Cerca su DEF»' + (c.corte === 'cassazione' ? ' o su SentenzeWeb' : '') + '. Con il Worker configurato la verifica è automatica.' + (c.avviso ? ' ' + c.avviso + '.' : ''),
+        linkDef: urlRicercaDef(c), link: c.corte === 'cassazione' ? LINK_SENTENZEWEB : null };
     }
     if (c.genere === 'prassi') {
       if (c.dataValida === false) return { esito: 'ko', bloccante: true, motivo: 'La data del documento di prassi non esiste.' };
-      return { esito: 'nv', motivo: 'Fonte di prassi non collegata: verifica manuale.' };
+      if (!c.anno) return { esito: 'nv', motivo: 'Manca l\'anno del documento di prassi: impossibile cercarlo.' };
+      return { esito: 'nv', motivo: 'Verifica con «Cerca su DEF». Con il Worker configurato la verifica è automatica.', linkDef: urlRicercaDef(c) };
     }
     if (c.genere === 'atto' && c.atto && c.atto.errore) return { esito: 'ko', bloccante: true, motivo: c.atto.errore + '.' };
     if (!c.atto) return { esito: 'nv', motivo: 'Atto non riconosciuto: aggiungilo al dizionario o scrivi gli estremi completi.' };
@@ -572,6 +640,81 @@
     });
   }
 
+  // ------------------------------------------------------------- DEF (MEF)
+  var DEF_BASE = 'https://def.finanze.it/DocTribFrontend/';
+  var LINK_SENTENZEWEB = 'https://www.italgiure.giustizia.it/sncass/';
+
+  /** Parametri di ricerca su DEF per una sentenza o un documento di prassi. */
+  function parametriDef(c) {
+    if (!c.anno || !c.numero) return null;
+    if (c.genere === 'prassi') {
+      return { ambito: 'P', tipo: c.tipo === 'circolare' ? 'Circolare' : (c.tipo === 'risoluzione' ? 'Risoluzione' : 'Interpello'), numero: c.numero, anno: c.anno, ente: 'Agenzia delle Entrate' };
+    }
+    if (c.genere === 'sentenza') {
+      return { ambito: 'G', tipo: '', numero: c.numero, anno: c.anno, ente: c.corte === 'cassazione' ? 'Corte di Cassazione' : '' };
+    }
+    return null;
+  }
+
+  function urlRicercaDef(c) {
+    var p = parametriDef(c);
+    if (!p) return null;
+    var q = ['js_enabled=0', 'tipoComplessitaRicerca=avanzata', 'tipoRicerca=RA', 'device=D', 'ambitoRicerca=' + p.ambito, 'parole=',
+      'tipoCriterioRicerca=0', 'tipo_ord=DATA', 'tipoEstremi=' + encodeURIComponent(p.tipo), 'numero=' + p.numero,
+      'annoDataEmissioneDa=' + p.anno, 'annoDataEmissioneA=' + p.anno, 'ente=' + encodeURIComponent(p.ente).replace(/%20/g, '+')];
+    if (p.ambito === 'G') q.push('ricercaAreaRiservata=false');
+    return DEF_BASE + (p.ambito === 'G' ? 'executeAdvancedGiurisprudenzaSearch.do?' : 'executeAdvancedPrassiSearch.do?') + q.join('&');
+  }
+
+  function normLuogo(s) { return String(s || '').toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, ' ').trim(); }
+
+  /**
+   * Valuta la risposta dello sportello /def del Worker: { totale, risultati: [{ id, estremi, titolo }] } oppure { errore }.
+   * DEF raccoglie una selezione: l'assenza non prova l'inesistenza (esito "Non verificabile", mai "Non trovata").
+   */
+  function valutaDef(c, r) {
+    var base = { linkDef: urlRicercaDef(c), link: c.genere === 'sentenza' && c.corte === 'cassazione' ? LINK_SENTENZEWEB : null };
+    function o(x) { for (var k in base) if (!(k in x)) x[k] = base[k]; return x; }
+    if (!r || r.errore) return o({ esito: 'nv', motivo: 'DEF non raggiungibile tramite il Worker (' + ((r && r.errore) || 'errore') + '). Usa «Cerca su DEF».' });
+    var reNum = new RegExp('\\bn\\.\\s*' + c.numero + '\\b');
+    var cand = (r.risultati || []).filter(function (x) {
+      if (!reNum.test(x.estremi)) return false;
+      if (c.genere === 'prassi') return /Agenzia delle Entrate/i.test(x.estremi);
+      if (c.corte === 'cassazione') return /Corte di Cassazione/i.test(x.estremi);
+      if (c.luogo) return normLuogo(x.estremi).indexOf(normLuogo(c.luogo)) >= 0;
+      return /giustizia tributaria|Commissione tributaria/i.test(x.estremi);
+    });
+    var cosa = c.genere === 'prassi' ? 'documento' : 'provvedimento';
+    if (!cand.length) {
+      return o({ esito: 'nv', motivo: 'Non presente in DEF' + (c.genere === 'sentenza' ? ', che raccoglie una selezione della giurisprudenza tributaria' : '') + ': verifica manuale' + (c.corte === 'cassazione' ? ' (SentenzeWeb)' : '') + '.' });
+    }
+    cand.forEach(function (x) {
+      var d = /del (\d{2})\/(\d{2})\/(\d{4})/.exec(x.estremi);
+      x.data = d ? d[3] + '-' + d[2] + '-' + d[1] : null;
+      var sz = /Sezione\/Collegio\s+(\w+)/i.exec(x.estremi); x.sezione = sz ? sz[1] : null;
+      x.tipoDoc = (/^(\w+)/.exec(x.estremi) || [])[1] || '';
+      x.link = DEF_BASE + (c.genere === 'prassi' ? 'getPrassiDetail.do?id=' : 'getGiurisprudenzaDetail.do?id=') + encodeURIComponent(x.id);
+    });
+    var scelti = cand;
+    if (c.data) {
+      var stessaData = cand.filter(function (x) { return x.data === c.data; });
+      if (!stessaData.length) {
+        var x0 = cand[0];
+        return o({ esito: 'data', def: x0, linkDoc: x0.link,
+          motivo: 'In DEF il ' + cosa + ' n. ' + c.numero + '/' + c.anno + ' è del ' + (x0.data ? x0.data.split('-').reverse().join('/') : '?') + ', non del ' + c.data.split('-').reverse().join('/') + ': controlla gli estremi.' });
+      }
+      scelti = stessaData;
+    }
+    if (scelti.length > 1) {
+      return o({ esito: 'nv', candidati: scelti, motivo: 'In DEF ci sono ' + scelti.length + ' ' + cosa + ' con questi estremi: indica la data o l\'autorità per distinguerli.' });
+    }
+    var x = scelti[0], note = [];
+    if (c.tipoProvv && x.tipoDoc && c.tipoProvv.toLowerCase() !== x.tipoDoc.toLowerCase()) note.push('In DEF risulta come ' + x.tipoDoc);
+    if (c.sezioneN && x.sezione && String(c.sezioneN) !== String(x.sezione) && c.sezioneN !== 'SU') note.push('Sezione in DEF: ' + x.sezione);
+    return o({ esito: 'ok', def: x, linkDoc: x.link, note: note,
+      motivo: 'Trovato in DEF: ' + x.estremi + (x.titolo ? ' — ' + x.titolo : '') + '.' + (note.length ? ' ' + note.join('. ') + '.' : '') });
+  }
+
   /** Atto citato senza articolo: basta che Normattiva lo trovi. */
   function valutaAtto(c, r) {
     var link = linkNormattiva(c.atto.urn, null);
@@ -584,7 +727,7 @@
   }
 
   return {
-    ATTI: ATTI, valutaAtto: valutaAtto, leggiAttoTipizzato: leggiAttoTipizzato, ESITI: ESITI,
+    ATTI: ATTI, valutaAtto: valutaAtto, valutaDef: valutaDef, parametriDef: parametriDef, urlRicercaDef: urlRicercaDef, DEF_BASE: DEF_BASE, leggiAttoTipizzato: leggiAttoTipizzato, ESITI: ESITI,
     estraiCitazioni: estraiCitazioni, esitoFormale: esitoFormale, valutaNorma: valutaNorma,
     urnArticolo: urnArticolo, linkNormattiva: linkNormattiva,
     testoDaHtml: testoDaHtml, strutturaNorma: strutturaNorma, pseudonimizza: pseudonimizza, articoloRestituito: articoloRestituito, abrogazione: abrogazione, estraiComma: estraiComma,

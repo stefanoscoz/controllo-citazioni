@@ -1,4 +1,4 @@
-# Controllo citazioni — componente aggiuntivo per Word (v0.3)
+# Controllo citazioni — componente aggiuntivo per Word (v0.4)
 
 Pannello laterale per Word che legge il documento, trova le citazioni e le controlla:
 
@@ -9,6 +9,16 @@ Pannello laterale per Word che legge il documento, trova le citazioni e le contr
 | 3 · Pertinenza (IA) | Non ancora attiva: richiede un server per custodire la chiave API (prevista nella v0.2). |
 
 Sul documento il plugin aggiunge **riquadri colorati** attorno alle citazioni (content control) e **commenti** con l'esito. Può inserire una **nota di verifica** e un **registro** in fondo al documento. Il testo del documento non viene mai riscritto. Il pulsante "Rimuovi marcature" toglie tutto.
+
+**Novità v0.4 — prassi e giurisprudenza tributaria (DEF, MEF)**
+- Riconosce anche: Cassazione in tutte le forme comuni («Cass., sez. V, ord. 4 novembre 2026, n. 28437», «Cass. n. 28437/2026», «Cassazione, ordinanza n. … del …»), giudici tributari di merito («CGT I grado Milano, sent. n. 100/2024», «CTR Lombardia n. …», «CTP …»), circolari, risoluzioni e risposte a interpello («circolare n. 32/E del 5 dicembre 2023», «circ. AdE n. 32/E/2023», «risposta a interpello n. 100/2024»).
+- **Senza Worker:** pulsante **«Cerca su DEF»**, che apre la ricerca già compilata sulla Banca dati *Documentazione Economica e Finanziaria* del MEF (def.finanze.it).
+- **Con il Worker** (sezione 6): verifica **automatica** su DEF.
+  - **Verificata**, con data e oggetto ufficiali e link al documento.
+  - **Data diversa**, se numero e anno coincidono ma la data no.
+  - **Non verificabile**, se il documento non è in DEF: DEF raccoglie una *selezione* della giurisprudenza tributaria, quindi l'assenza non prova che la sentenza non esista.
+  - Per le sentenze: **massima** del Ce.R.D.E.F. nel dettaglio. Con l'IA attiva, la pertinenza della frase viene valutata sulla massima.
+- Normattiva viene sempre interrogata direttamente; il Worker serve solo per DEF e IA.
 
 **Novità v0.3**
 - Voce del tasto destro più visibile: **«§ Consulta norma (Normattiva)»**, con icona (lente con §).
@@ -88,13 +98,17 @@ Controllo facoltativo del manifest con lo strumento ufficiale Microsoft (serve N
 3. Controlla la **data di riferimento**: il plugin la ricava dal testo (es. «periodo d'imposta 2022» → 31/12/2022), ma puoi cambiarla.
 4. **Controlla documento** e leggi gli esiti nel pannello. "Dettaglio" mostra il confronto tra le versioni della norma.
 
-## 6. Se il test fallisce per CORS (proxy di riserva)
-Il browser di Word blocca le chiamate verso siti che non autorizzano esplicitamente la tua pagina. Se succede con Normattiva:
-1. Crea un account gratuito su Cloudflare → **Workers & Pages → Create → Worker**.
-2. Incolla il contenuto di `proxy/worker.js`, sostituisci `TUO-UTENTE` in `ORIGINE` → **Deploy**.
-3. Copia l'indirizzo del worker (`https://….workers.dev`) nelle impostazioni del plugin, campo **Indirizzo proxy** → **Salva** → **Test connessione**.
+## 6. Attivare il Worker (DEF e, se vuoi, IA)
+Il browser dentro Word non può leggere i siti di DEF (blocco di sicurezza CORS). Il Worker è un piccolo servizio gratuito su Cloudflare che interroga DEF per conto del plugin. **Un solo Worker** serve sia per DEF sia per l'IA.
+1. Crea un account gratuito su cloudflare.com → **Workers & Pages → Create → Worker** → dagli un nome (es. `controllo-citazioni`) → **Deploy**.
+2. **Edit code** → cancella il contenuto, incolla tutto `proxy/worker.js` → **Deploy**. In cima al file `ORIGINE` deve essere `https://stefanoscoz.github.io`.
+3. Copia l'indirizzo del Worker (`https://controllo-citazioni.<tuo-nome>.workers.dev`).
+4. Nel plugin: ⚙︎ → **Indirizzo del Worker** → incolla → **Salva** → **Test connessione**. Deve comparire:
+   - `✓ Worker raggiungibile`
+   - `✓ DEF: circolare 32/E/2023 trovata`
+5. Solo per l'IA: sezione 9 (chiave API come Secret nello stesso Worker).
 
-Il proxy inoltra solo le richieste di dettaglio atto e non conserva dati.
+Il piano gratuito di Cloudflare consente 100.000 richieste al giorno: un controllo ne usa poche decine.
 
 ## 7. Aggiornare il plugin
 1. Ricarica su GitHub i file modificati e aspetta 1–2 minuti.
@@ -109,9 +123,9 @@ poi tasto destro nel pannello → **Ispeziona elemento**. Funziona solo con Offi
 
 ## 9. Attivare la pertinenza con IA (facoltativo)
 Serve una chiave API Claude (console.anthropic.com), che resta nel Worker e non va mai nella pagina pubblica.
-1. Cloudflare → **Workers & Pages → Create → Worker** → incolla `proxy/worker.js` → **Deploy**.
+1. Usa il Worker della sezione 6: non ne serve un altro.
 2. Nel Worker: **Settings → Variables and Secrets → Add** → tipo **Secret**, nome `ANTHROPIC_API_KEY`, valore la tua chiave → **Deploy**. Facoltativo: variabile `MODELLO` per cambiare modello.
-3. Nel plugin: ⚙︎ → **Indirizzo proxy** = indirizzo del Worker (`https://….workers.dev`) → spunta **Verifica di pertinenza con IA** → **Salva**.
+3. Nel plugin: ⚙︎ → spunta **Verifica di pertinenza con IA** → **Salva**. Il Test connessione deve indicare «chiave API presente».
 
 Cosa viene inviato: la frase attorno alla citazione, pseudonimizzata (codici fiscali, IBAN, partite IVA, email e telefoni sostituiti), più il testo della norma restituito da Normattiva. I **nomi propri non vengono rimossi**: evita di attivare la funzione su documenti con dati di clienti che non vuoi inviare. L'esito dell'IA è sempre indicato come «da validare» (art. 13 L. 132/2025). Il costo delle chiamate è a tuo carico secondo il listino API.
 

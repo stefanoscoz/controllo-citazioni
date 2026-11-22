@@ -6,14 +6,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Controllo citazioni</title>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-  <link rel="stylesheet" href="taskpane.css?v=0.3">
+  <link rel="stylesheet" href="taskpane.css?v=0.4">
 </head>
 <body>
   <header class="testata">
     <span class="marchio" aria-hidden="true">§</span>
     <div class="testata-testi">
       <span class="titolo">Controllo citazioni</span>
-      <span class="sottotitolo">versione 0.3</span>
+      <span class="sottotitolo">versione 0.4</span>
     </div>
     <button type="button" class="icona" id="btnImpostazioni" aria-label="Impostazioni" aria-expanded="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
@@ -34,9 +34,9 @@
   <section id="impostazioni" class="pannello-impostazioni" hidden>
     <label for="inNome">Nome del professionista</label>
     <input id="inNome" type="text" placeholder="Es. Mario Rossi" autocomplete="name">
-    <label for="inProxy">Indirizzo proxy (facoltativo)</label>
+    <label for="inProxy">Indirizzo del Worker (DEF e IA, facoltativo)</label>
     <input id="inProxy" type="url" placeholder="https://…workers.dev">
-    <p class="aiuto">Lascia vuoto per interrogare direttamente l'API Open Data di Normattiva. Usa il proxy solo se il test di connessione fallisce per CORS (vedi README).</p>
+    <p class="aiuto">Normattiva viene sempre interrogata direttamente. Il Worker serve per verificare in automatico prassi e Cassazione su DEF (MEF) e per la pertinenza con IA (README, sezione 6). Senza Worker trovi il pulsante «Cerca su DEF».</p>
     <label class="spunta"><input type="checkbox" id="chkIA"> Verifica di pertinenza con IA (livello 3)</label>
     <p class="aiuto">Richiede il proxy con la chiave API configurata (README, sezione 9). Il testo viene pseudonimizzato prima dell'invio.</p>
     <div class="riga-pulsanti">
@@ -141,7 +141,7 @@
 
   <div id="messaggio" class="messaggio" role="status" aria-live="polite"></div>
 
-  <script src="core.js?v=0.3"></script>
-  <script src="taskpane.js?v=0.3"></script>
+  <script src="core.js?v=0.4"></script>
+  <script src="taskpane.js?v=0.4"></script>
 </body>
 </html>

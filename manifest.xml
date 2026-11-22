@@ -10,7 +10,7 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
            xsi:type="TaskPaneApp">
   <Id>dc90d6e2-8c16-4c75-add6-60dc1919b58a</Id>
-  <Version>0.3.0.0</Version>
+  <Version>0.4.0.0</Version>
   <ProviderName>Studio</ProviderName>
   <DefaultLocale>it-IT</DefaultLocale>
   <DisplayName DefaultValue="Controllo citazioni"/>

@@ -1,22 +1,90 @@
 /**
  * Proxy (facoltativo) per il plugin "Controllo citazioni" — Cloudflare Worker.
  *
- * 1. /api/v1/atto/dettaglio-atto-urn  → inoltra a Normattiva (serve solo se il browser di Word blocca le chiamate dirette)
- * 2. /pertinenza                      → verifica di pertinenza con l'API Claude (livello 3)
+ * 1. /def                             → verifica di prassi e giurisprudenza tributaria su DEF (MEF, def.finanze.it)
+ * 2. /def/massima                     → massima e intitolazione di una sentenza presente in DEF
+ * 3. /pertinenza                      → verifica di pertinenza con l'API Claude (livello 3, facoltativa)
+ * 4. /api/v1/atto/dettaglio-atto-urn  → inoltro a Normattiva (riserva: il plugin di norma la interroga direttamente)
  *
  * Configurazione (Cloudflare → Worker → Settings → Variables and Secrets):
- *   ANTHROPIC_API_KEY  (Secret, obbligatoria per /pertinenza)
+ *   ANTHROPIC_API_KEY  (Secret, solo per /pertinenza; /def funziona anche senza)
  *   MODELLO            (facoltativa, es. "claude-sonnet-5-5")
  * Il Worker non registra né conserva testi. Ammette solo richieste dalla tua pagina GitHub Pages.
  */
 const ORIGINE = 'https://stefanoscoz.github.io';
 const NORMATTIVA = 'https://api.normattiva.it/t/normattiva.api/bff-opendata/v1';
 const MODELLO_PREDEFINITO = 'claude-sonnet-5-5';
+const DEF = 'https://def.finanze.it/DocTribFrontend/';
+
+// ---------------------------------------------------------------- DEF (MEF)
+// Le pagine di DEF incorporano i risultati in una variabile JavaScript con XML ("var xmlResult = '...'").
+function estraiVariabile(html, nome) {
+  const m = html.match(new RegExp('var\\s+' + nome + "\\s*=\\s*'([\\s\\S]*?)';\\s*(?://|\\n|\\r|</script>)"));
+  return m ? m[1].replace(/\\(.)/g, '$1') : null;
+}
+function testoPulito(s) {
+  return String(s || '').replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim();
+}
+function analizzaRisultati(html) {
+  const xml = estraiVariabile(html, 'xmlResult');
+  if (xml === null) return { errore: 'Formato della pagina DEF non riconosciuto' };
+  const tot = (xml.match(/<totaleProvvedimenti>(\d+)<\/totaleProvvedimenti>/) || [])[1];
+  const risultati = [];
+  const re = /<Provvedimento idProvvedimento="([^"]+)"[^>]*>([\s\S]*?)<\/Provvedimento>/g;
+  let m;
+  while ((m = re.exec(xml)) && risultati.length < 10) {
+    const estremi = testoPulito((m[2].match(/<estremi[^>]*>([\s\S]*?)<\/estremi>/) || [])[1]);
+    const titolo = testoPulito((m[2].match(/<titoloProvvedimento>([\s\S]*?)<\/titoloProvvedimento>/) || [])[1]).slice(0, 300);
+    risultati.push({ id: m[1], estremi, titolo });
+  }
+  return { totale: tot ? parseInt(tot, 10) : risultati.length, risultati };
+}
+function analizzaDettaglio(html) {
+  const xml = estraiVariabile(html, 'xmlDettaglio');
+  if (xml === null) return { errore: 'Formato della pagina DEF non riconosciuto' };
+  const pezzo = (tag) => testoPulito((xml.match(new RegExp('<' + tag + '[^>]*>([\\s\\S]*?)</' + tag + '>')) || [])[1]);
+  return { estremi: pezzo('estremi'), intitolazione: pezzo('intitolazione'), massima: pezzo('massima').slice(0, 4000) };
+}
+const TIPI_AMMESSI = /^(|Circolare|Risoluzione|Interpello|Risposta|Nota|Provvedimento|Sentenza|Ordinanza|Decreto|Decisione)$/;
+
+async function def(url, origin) {
+  const q = url.searchParams;
+  const ambito = q.get('ambito') === 'G' ? 'G' : 'P';
+  const tipo = q.get('tipo') || '';
+  const numero = (q.get('numero') || '').replace(/\D/g, '');
+  const anno = (q.get('anno') || '').replace(/\D/g, '');
+  const ente = (q.get('ente') || '').slice(0, 120);
+  if (!numero || anno.length !== 4 || !TIPI_AMMESSI.test(tipo)) return json({ errore: 'Parametri non validi' }, 400, origin);
+  const p = new URLSearchParams({
+    js_enabled: '0', tipoComplessitaRicerca: 'avanzata', tipoRicerca: 'RA', device: 'D', ambitoRicerca: ambito,
+    parole: '', tipoCriterioRicerca: '0', tipo_ord: 'DATA', tipoEstremi: tipo, numero,
+    annoDataEmissioneDa: anno, annoDataEmissioneA: anno, ente
+  });
+  if (ambito === 'G') p.set('ricercaAreaRiservata', 'false');
+  const pagina = ambito === 'G' ? 'executeAdvancedGiurisprudenzaSearch.do' : 'executeAdvancedPrassiSearch.do';
+  const r = await fetch(DEF + pagina + '?' + p.toString(), { headers: { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (Controllo citazioni)' } });
+  if (!r.ok) return json({ errore: 'DEF: HTTP ' + r.status }, 502, origin);
+  const esito = analizzaRisultati(await r.text());
+  if (esito.errore) return json(esito, 502, origin);
+  esito.ricerca = DEF + pagina + '?' + p.toString();
+  return json(esito, 200, origin);
+}
+
+async function defMassima(url, origin) {
+  const id = url.searchParams.get('id') || '';
+  if (!/^\{[0-9A-F-]{36}\}$/i.test(id)) return json({ errore: 'Identificativo non valido' }, 400, origin);
+  const r = await fetch(DEF + 'getGiurisprudenzaDetail.do?id=' + encodeURIComponent(id), { headers: { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (Controllo citazioni)' } });
+  if (!r.ok) return json({ errore: 'DEF: HTTP ' + r.status }, 502, origin);
+  const d = analizzaDettaglio(await r.text());
+  return json(d, d.errore ? 502 : 200, origin);
+}
 
 function cors(origin) {
   return {
     'Access-Control-Allow-Origin': origin === ORIGINE ? ORIGINE : 'null',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Accept',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin'
@@ -77,12 +145,17 @@ ${testo}
   return json({ giudizio: esito.giudizio, motivazione: String(esito.motivazione || '').slice(0, 400), passaggio: String(esito.passaggio || '').slice(0, 300), modello: dati.model || null }, 200, origin);
 }
 
+export { analizzaRisultati, analizzaDettaglio, estraiVariabile }; // per i test
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin') || '';
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(origin) });
     if (origin !== ORIGINE) return json({ errore: 'Origine non ammessa' }, 403, origin);
+    if (request.method === 'GET' && url.pathname === '/def') return def(url, origin);
+    if (request.method === 'GET' && url.pathname === '/def/massima') return defMassima(url, origin);
+    if (request.method === 'GET' && url.pathname === '/stato') return json({ ok: true, ia: !!env.ANTHROPIC_API_KEY, versione: '0.4' }, 200, origin);
     if (request.method !== 'POST') return json({ errore: 'Metodo non ammesso' }, 405, origin);
 
     if (url.pathname === '/pertinenza') return pertinenza(request, env, origin);

@@ -199,3 +199,9 @@ input[type=date], input[type=text], input[type=url] { padding: 8px 10px; border:
 #pannelloSotto { display: flex; flex-direction: column; gap: 10px; }
 .legenda { flex-wrap: wrap; line-height: 1.4; }
 .avvertenza { margin: 0; }
+
+/* ---------- v0.4: DEF ---------- */
+.esito-data .numero { background: var(--mod); } .esito-data .chip { background: var(--mod-f); color: var(--mod); }
+.fonte { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; color: #1D4F8C; background: #E8F0FA; padding: 1px 6px; border-radius: 4px; }
+.trovato { font-size: 12px; line-height: 1.45; color: #22303F; background: #F6F8FB; border: 1px solid var(--linea2); border-radius: 6px; padding: 6px 8px; }
+.trovato a { font-weight: 600; }
