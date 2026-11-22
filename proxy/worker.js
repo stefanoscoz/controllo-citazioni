@@ -9,6 +9,8 @@
  * Configurazione (Cloudflare → Worker → Settings → Variables and Secrets):
  *   ANTHROPIC_API_KEY  (Secret, solo per /pertinenza; /def funziona anche senza)
  *   MODELLO            (facoltativa, es. "claude-sonnet-5-5")
+ *   PONTE_DEF          (facoltativa, indirizzo del ponte Netlify, es. https://ponte-def-xxx.netlify.app)
+ *   CHIAVE_PONTE       (Secret, uguale a quella impostata su Netlify)
  * Il Worker non registra né conserva testi. Ammette solo richieste dalla tua pagina GitHub Pages.
  */
 const ORIGINE = 'https://stefanoscoz.github.io';
@@ -20,8 +22,21 @@ const INTESTAZIONI_DEF = { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (Co
 
 // Cloudflare rifiuta i certificati che non riesce a validare (HTTP 525/526, es. catena
 // incompleta lato server). In quel caso si riprova in http, senza seguire redirect verso https.
-async function scaricaDef(percorso, traccia) {
+async function scaricaDef(percorso, traccia, env) {
   let r;
+  // Ponte DEF (Netlify): aggiunge l'intermedio Sectigo mancante, vedi ponte-def/
+  if (env && env.PONTE_DEF) {
+    const i = percorso.indexOf('?');
+    const indirizzo = env.PONTE_DEF.replace(/\/+$/, '') + '/def?pagina=' + encodeURIComponent(percorso.slice(0, i < 0 ? undefined : i)) + (i < 0 ? '' : '&' + percorso.slice(i + 1));
+    try {
+      r = await fetch(indirizzo, { headers: { 'x-chiave-ponte': env.CHIAVE_PONTE || '' } });
+      if (traccia) traccia.push('ponte: HTTP ' + r.status);
+      if (r.ok) return { ok: true, testo: await r.text(), via: 'ponte' };
+      return { ok: false, errore: 'ponte HTTP ' + r.status + (r.status === 401 ? ' (CHIAVE_PONTE diversa tra Worker e Netlify)' : ': ' + (await r.text()).slice(0, 200)) };
+    } catch (e) {
+      return { ok: false, errore: 'ponte non raggiungibile: ' + String(e && e.message || e) };
+    }
+  }
   try {
     r = await fetch(DEF + percorso, { headers: INTESTAZIONI_DEF });
     if (traccia) traccia.push('https: HTTP ' + r.status);
@@ -55,6 +70,8 @@ function testoPulito(s) {
 function analizzaRisultati(html) {
   const xml = estraiVariabile(html, 'xmlResult');
   if (xml === null) return { errore: 'Formato della pagina DEF non riconosciuto' };
+  // pagina troncata con xmlResult vuoto: DEF non ha completato la ricerca (non vuol dire «0 risultati»)
+  if (!xml.trim()) return { errore: 'DEF ha restituito una pagina vuota: ricerca momentaneamente non disponibile' };
   const tot = (xml.match(/<totaleProvvedimenti>(\d+)<\/totaleProvvedimenti>/) || [])[1];
   const risultati = [];
   const re = /<Provvedimento idProvvedimento="([^"]+)"[^>]*>([\s\S]*?)<\/Provvedimento>/g;
@@ -74,7 +91,7 @@ function analizzaDettaglio(html) {
 }
 const TIPI_AMMESSI = /^(|Circolare|Risoluzione|Interpello|Risposta|Nota|Provvedimento|Sentenza|Ordinanza|Decreto|Decisione)$/;
 
-async function def(url, origin) {
+async function def(url, origin, env) {
   const q = url.searchParams;
   const ambito = q.get('ambito') === 'G' ? 'G' : 'P';
   const tipo = q.get('tipo') || '';
@@ -82,14 +99,16 @@ async function def(url, origin) {
   const anno = (q.get('anno') || '').replace(/\D/g, '');
   const ente = (q.get('ente') || '').slice(0, 120);
   if (!numero || anno.length !== 4 || !TIPI_AMMESSI.test(tipo)) return json({ errore: 'Parametri non validi' }, 400, origin);
-  const p = new URLSearchParams({
-    js_enabled: '0', tipoComplessitaRicerca: 'avanzata', tipoRicerca: 'RA', device: 'D', ambitoRicerca: ambito,
-    parole: '', tipoCriterioRicerca: '0', tipo_ord: 'DATA', tipoEstremi: tipo, numero,
-    annoDataEmissioneDa: anno, annoDataEmissioneA: anno, ente
-  });
-  if (ambito === 'G') p.set('ricercaAreaRiservata', 'false');
+  // DEF (da novembre 2026) completa la ricerca solo se riceve TUTTI i campi del modulo, anche vuoti
+  const p = new URLSearchParams(ambito === 'G'
+    ? [['js_enabled', '0'], ['tipoComplessitaRicerca', 'avanzata'], ['ricercaAreaRiservata', 'false'], ['tipoRicerca', 'RA'], ['device', 'D'], ['ambitoRicerca', 'G']]
+    : [['js_enabled', '0'], ['tipoComplessitaRicerca', 'avanzata'], ['tipoRicerca', 'RA'], ['device', 'D'], ['ambitoRicerca', 'P']]);
+  [['parole', ''], ['ricercaNelTitolo', ''], ['tipoCriterioRicerca', '0'], ['tipo_ord', 'DATA'], ['tipoEstremi', tipo], ['numero', numero],
+    ['giornoDataEmissioneDa', ''], ['meseDataEmissioneDa', ''], ['annoDataEmissioneDa', anno], ['dataEmissioneDa', ''],
+    ['giornoDataEmissioneA', ''], ['meseDataEmissioneA', ''], ['annoDataEmissioneA', anno], ['dataEmissioneA', ''],
+    ['ente', ente], ['superEnte', ''], ['materiaFiscale', ''], ['classificazioneArgomento', '']].forEach(([k, v]) => p.append(k, v));
   const pagina = ambito === 'G' ? 'executeAdvancedGiurisprudenzaSearch.do' : 'executeAdvancedPrassiSearch.do';
-  const r = await scaricaDef(pagina + '?' + p.toString());
+  const r = await scaricaDef(pagina + '?' + p.toString(), null, env);
   if (!r.ok) return json({ errore: 'DEF: ' + r.errore }, 502, origin);
   const esito = analizzaRisultati(r.testo);
   if (esito.errore) return json(esito, 502, origin);
@@ -97,10 +116,10 @@ async function def(url, origin) {
   return json(esito, 200, origin);
 }
 
-async function defMassima(url, origin) {
+async function defMassima(url, origin, env) {
   const id = url.searchParams.get('id') || '';
   if (!/^\{[0-9A-F-]{36}\}$/i.test(id)) return json({ errore: 'Identificativo non valido' }, 400, origin);
-  const r = await scaricaDef('getGiurisprudenzaDetail.do?id=' + encodeURIComponent(id));
+  const r = await scaricaDef('getGiurisprudenzaDetail.do?id=' + encodeURIComponent(id), null, env);
   if (!r.ok) return json({ errore: 'DEF: ' + r.errore }, 502, origin);
   const d = analizzaDettaglio(r.testo);
   return json(d, d.errore ? 502 : 200, origin);
@@ -151,14 +170,19 @@ ${testo}
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
+      // niente temperature/top_p/top_k: dai modelli Claude 4.7 in poi (es. claude-sonnet-5-5) un valore
+      // non predefinito restituisce HTTP 400. La ripetibilità si ottiene con istruzioni rigide e output JSON.
       model: env.MODELLO || MODELLO_PREDEFINITO,
-      max_tokens: 400,
-      temperature: 0,
+      max_tokens: 2000,
       system: ISTRUZIONI,
       messages: [{ role: 'user', content: messaggio }]
     })
   });
-  if (!r.ok) return json({ errore: 'API Claude: HTTP ' + r.status }, 502, origin);
+  if (!r.ok) {
+    let dettaglio = '';
+    try { const e = await r.json(); dettaglio = e && e.error && e.error.message ? ' — ' + String(e.error.message).slice(0, 200) : ''; } catch (e) { /* corpo non JSON */ }
+    return json({ errore: 'API Claude: HTTP ' + r.status + dettaglio }, 502, origin);
+  }
   const dati = await r.json();
   const testoRisposta = (dati.content || []).map((b) => b.text || '').join('');
   const m = testoRisposta.match(/\{[\s\S]*\}/);
@@ -180,14 +204,14 @@ export default {
     if (request.method === 'GET' && url.pathname === '/diagnosi') {
       // apribile anche dal browser: prova la connessione a DEF e non espone dati riservati
       const traccia = [];
-      const r = await scaricaDef('executeAdvancedPrassiSearch.do?js_enabled=0&ambitoRicerca=P&tipoEstremi=Circolare&numero=32&annoDataEmissioneDa=2023&annoDataEmissioneA=2023&ente=Agenzia+delle+Entrate', traccia);
+      const r = await scaricaDef('executeAdvancedPrassiSearch.do?js_enabled=0&tipoComplessitaRicerca=avanzata&tipoRicerca=RA&device=D&ambitoRicerca=P&parole=&ricercaNelTitolo=&tipoCriterioRicerca=0&tipo_ord=DATA&tipoEstremi=Circolare&numero=32&giornoDataEmissioneDa=&meseDataEmissioneDa=&annoDataEmissioneDa=2023&dataEmissioneDa=&giornoDataEmissioneA=&meseDataEmissioneA=&annoDataEmissioneA=2023&dataEmissioneA=&ente=Agenzia+delle+Entrate&superEnte=&materiaFiscale=&classificazioneArgomento=', traccia, env);
       const esito = r.ok ? analizzaRisultati(r.testo) : null;
-      return new Response(JSON.stringify({ versione: '0.4.1', def: r.ok ? 'ok via ' + r.via : 'errore: ' + r.errore, risultati: esito ? esito.totale : null, tentativi: traccia }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
+      return new Response(JSON.stringify({ versione: '0.4.5', def: r.ok ? (esito.errore ? 'raggiunto via ' + r.via + ', ma ' + esito.errore : 'ok via ' + r.via) : 'errore: ' + r.errore, risultati: esito && !esito.errore ? esito.totale : null, tentativi: traccia }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
     }
     if (origin !== ORIGINE) return json({ errore: 'Origine non ammessa' }, 403, origin);
-    if (request.method === 'GET' && url.pathname === '/def') return def(url, origin);
-    if (request.method === 'GET' && url.pathname === '/def/massima') return defMassima(url, origin);
-    if (request.method === 'GET' && url.pathname === '/stato') return json({ ok: true, ia: !!env.ANTHROPIC_API_KEY, versione: '0.4.1' }, 200, origin);
+    if (request.method === 'GET' && url.pathname === '/def') return def(url, origin, env);
+    if (request.method === 'GET' && url.pathname === '/def/massima') return defMassima(url, origin, env);
+    if (request.method === 'GET' && url.pathname === '/stato') return json({ ok: true, ia: !!env.ANTHROPIC_API_KEY, versione: '0.4.5' }, 200, origin);
     if (request.method !== 'POST') return json({ errore: 'Metodo non ammesso' }, 405, origin);
 
     if (url.pathname === '/pertinenza') return pertinenza(request, env, origin);
