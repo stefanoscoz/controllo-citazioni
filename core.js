@@ -333,18 +333,76 @@
   // ---------------------------------------------------------------------------
   // 5. Analisi del testo restituito da Normattiva
   // ---------------------------------------------------------------------------
+  var ENTITA = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", egrave: 'è', eacute: 'é', agrave: 'à',
+    aacute: 'á', ograve: 'ò', oacute: 'ó', ugrave: 'ù', uacute: 'ú', igrave: 'ì', iacute: 'í', Egrave: 'È', Eacute: 'É',
+    Agrave: 'À', Ograve: 'Ò', Ugrave: 'Ù', Igrave: 'Ì', laquo: '«', raquo: '»', ldquo: '“', rdquo: '”', lsquo: '‘',
+    rsquo: '’', ndash: '–', mdash: '—', deg: '°', ordm: 'º', ordf: 'ª', euro: '€', hellip: '…', middot: '·', sect: '§' };
+
   function testoDaHtml(html) {
     return String(html || '')
+      .replace(/[\r\n]+/g, ' ')                               // gli a capo del sorgente HTML non contano
       .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|li|h\d)>/gi, '\n')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&egrave;/g, 'è').replace(/&agrave;/g, 'à')
-      .replace(/&ograve;/g, 'ò').replace(/&ugrave;/g, 'ù').replace(/&igrave;/g, 'ì').replace(/&eacute;/g, 'é')
-      .replace(/[ \t\r\f\v]+/g, ' ')
-      .replace(/\s*\n\s*/g, '\n')
+      .replace(/<(p|div|li|h\d)(\s[^>]*)?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&#(\d+);/g, function (_, n) { return String.fromCharCode(parseInt(n, 10)); })
+      .replace(/&#x([0-9a-f]+);/gi, function (_, n) { return String.fromCharCode(parseInt(n, 16)); })
+      .replace(/&([a-z]+);/gi, function (m, n) { return ENTITA[n] !== undefined ? ENTITA[n] : m; })
+      .replace(/[ \t\f\v ]+/g, ' ')
+      .replace(/ *\n[\s]*/g, '\n')
       .trim();
+  }
+
+  var RE_COMMA_RIGA = new RegExp('^(\\d+(?:[\\s-]?' + LATINI + ')?)\\.\\s+', 'i');
+  var RE_LETTERA_RIGA = new RegExp('^((?:[a-z]{1,2}|\\d+)(?:[\\s-]?' + LATINI + ')?(?:\\.\\d+)?)\\)\\s+', 'i');
+
+  /**
+   * Struttura il testo di un articolo per la lettura:
+   * { titolo, rubrica, preambolo, commi: [{ numero, implicito, righe: [{ lettera|null, testo }] }] }
+   * Nei codici e nei testi più vecchi (c.c., D.P.R. 633/1972) i commi non sono numerati: ogni capoverso è un comma.
+   * Normattiva spezza le righe dove c'è testo modificato "((...))": quelle righe vengono ricucite.
+   */
+  function strutturaNorma(testo) {
+    var righe = String(testo || '').split('\n').map(function (r) { return r.trim(); }).filter(Boolean);
+    var out = { titolo: null, rubrica: null, preambolo: [], commi: [] };
+    if (righe.length && /^Art(?:icolo)?\.?\s*\d+/i.test(righe[0]) && righe[0].length < 40) out.titolo = righe.shift().replace(/\.$/, '');
+    if (righe.length && righe[0].length < 160 && !RE_COMMA_RIGA.test(righe[0]) &&
+        (/^\(?\(?\s*\(.*\)\s*\)?\)?\.?$/.test(righe[0]) || (righe.length > 1 && !/[.;:]$/.test(righe[0]) && /^[A-ZÀ-Ù(]/.test(righe[0])))) {
+      out.rubrica = righe.shift().replace(/^\(\(\s*|\s*\)\)$/g, '').replace(/\.$/, '').replace(/^\((.*)\)$/, '$1').trim();
+    }
+    // ricuci le righe spezzate dalle modifiche: continua se la riga precedente non chiude la frase
+    // o se la riga inizia in minuscolo / con punteggiatura
+    var cucite = [];
+    righe.forEach(function (r) {
+      var prec = cucite[cucite.length - 1];
+      var continua = prec && !RE_COMMA_RIGA.test(r) && !RE_LETTERA_RIGA.test(r) &&
+        (/^(\(\()?\s*[,;:.)a-zà-ù]/.test(r) || !/[.;:]\s*(\)\))?$/.test(prec));
+      if (continua) cucite[cucite.length - 1] = prec + (/^(\(\()?\s*[,;:.)]/.test(r) ? '' : ' ') + r;
+      else cucite.push(r);
+    });
+    var numerati = cucite.some(function (r) { return /^1\.\s/.test(r); });
+    var cur = null, n = 0;
+    cucite.forEach(function (r) {
+      var mc = numerati ? RE_COMMA_RIGA.exec(r) : null, ml = RE_LETTERA_RIGA.exec(r);
+      if (mc) { cur = { numero: mc[1].replace(/\s+/g, '-'), implicito: false, righe: [{ lettera: null, testo: r.slice(mc[0].length) }] }; out.commi.push(cur); }
+      else if (ml && cur) cur.righe.push({ lettera: ml[1], testo: r.slice(ml[0].length) });
+      else if (!numerati) { n++; cur = { numero: String(n), implicito: true, righe: [{ lettera: null, testo: r }] }; out.commi.push(cur); }
+      else if (cur) cur.righe.push({ lettera: null, testo: r });
+      else out.preambolo.push(r);
+    });
+    return out;
+  }
+
+  /** Pseudonimizza dati personali ricorrenti prima di inviare testo a un servizio esterno. */
+  function pseudonimizza(t) {
+    return String(t || '')
+      .replace(/\b[A-Z]{6}\d{2}[A-EHLMPR-T]\d{2}[A-Z]\d{3}[A-Z]\b/gi, '[CODICE FISCALE]')
+      .replace(/\bIT\d{2}[A-Z]\d{10}[0-9A-Z]{12}\b/gi, '[IBAN]')
+      .replace(/\b(?:P\.?\s?IVA|partita IVA)\s*:?\s*\d{11}\b/gi, '[PARTITA IVA]')
+      .replace(/\b\d{11}\b/g, '[NUMERO]')
+      .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[EMAIL]')
+      .replace(/(?:\+39\s?)?\b3\d{2}[\s.]?\d{6,7}\b/g, '[TELEFONO]');
   }
 
   /** "((ARTICOLO ABROGATO DAL D.LGS. 19 GENNAIO 2026, N. 10))" -> { cosa: 'articolo', da: 'D.LGS. 19 GENNAIO 2026, N. 10' } */
@@ -373,7 +431,14 @@
     var etichetta = suff ? n + '[\\s-]?' + suff : String(n);
     var reInizio = new RegExp('(?:^|\\n|\\s)(' + etichetta + ')\\.\\s', 'i');
     var mi = reInizio.exec(testo);
-    if (!mi) return null;
+    if (!mi) {
+      // codici con commi non numerati: il comma N è l'N-esimo capoverso
+      var st = strutturaNorma(testo);
+      if (!suff && st.commi.length && st.commi[0].implicito && st.commi[n - 1]) {
+        return st.commi[n - 1].righe.map(function (r) { return (r.lettera ? r.lettera + ') ' : '') + r.testo; }).join('\n');
+      }
+      return null;
+    }
     var start = mi.index + mi[0].length - mi[0].replace(/^\s+/, '').length;
     var resto = testo.slice(mi.index + mi[0].length);
     // possibili commi successivi: n-(latino successivo) oppure n+1
@@ -522,7 +587,7 @@
     ATTI: ATTI, valutaAtto: valutaAtto, leggiAttoTipizzato: leggiAttoTipizzato, ESITI: ESITI,
     estraiCitazioni: estraiCitazioni, esitoFormale: esitoFormale, valutaNorma: valutaNorma,
     urnArticolo: urnArticolo, linkNormattiva: linkNormattiva,
-    testoDaHtml: testoDaHtml, articoloRestituito: articoloRestituito, abrogazione: abrogazione, estraiComma: estraiComma,
+    testoDaHtml: testoDaHtml, strutturaNorma: strutturaNorma, pseudonimizza: pseudonimizza, articoloRestituito: articoloRestituito, abrogazione: abrogazione, estraiComma: estraiComma,
     contieneLettera: contieneLettera, confrontaParole: confrontaParole, dataApi: dataApi,
     suggerisciDataRiferimento: suggerisciDataRiferimento, dataValida: dataValida
   };

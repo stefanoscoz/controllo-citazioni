@@ -1,4 +1,4 @@
-# Controllo citazioni — componente aggiuntivo per Word (v0.2.1)
+# Controllo citazioni — componente aggiuntivo per Word (v0.3)
 
 Pannello laterale per Word che legge il documento, trova le citazioni e le controlla:
 
@@ -9,6 +9,18 @@ Pannello laterale per Word che legge il documento, trova le citazioni e le contr
 | 3 · Pertinenza (IA) | Non ancora attiva: richiede un server per custodire la chiave API (prevista nella v0.2). |
 
 Sul documento il plugin aggiunge **riquadri colorati** attorno alle citazioni (content control) e **commenti** con l'esito. Può inserire una **nota di verifica** e un **registro** in fondo al documento. Il testo del documento non viene mai riscritto. Il pulsante "Rimuovi marcature" toglie tutto.
+
+**Novità v0.3**
+- Voce del tasto destro più visibile: **«§ Consulta norma (Normattiva)»**, con icona (lente con §).
+- Pannello **Consulta norma** riprogettato:
+  - scheda con atto, articolo, rubrica e stato (in vigore / abrogato / modifiche future);
+  - tre sezioni: **Testo**, **Versioni**, **Riepilogo**;
+  - testo diviso in commi numerati, con il comma citato evidenziato e una barra per saltare da un comma all'altro;
+  - testo inserito o modificato evidenziato (in Normattiva è tra doppie parentesi);
+  - dimensione del carattere regolabile (A− / A+);
+  - versioni su una linea del tempo, con le voci «Leggi» e «Cosa è cambiato».
+- Codici e testi più vecchi (c.c., D.P.R. 633/1972), dove i commi non sono numerati: ogni capoverso conta come un comma. «art. 2423, comma 2, c.c.» trova il secondo capoverso.
+- **Livello 3 · Pertinenza con IA** (facoltativo, sezione 9): l'IA confronta la frase del parere con il testo della norma vigente alla data e segnala le citazioni che non sostengono l'affermazione.
 
 **Novità v0.2**
 - **Consulta norma**: seleziona un riferimento nel testo (es. «art. 19 del DPR 633/72»), tasto destro → **Consulta norma**. Il pannello si apre con:
@@ -94,6 +106,14 @@ Il proxy inoltra solo le richieste di dettaglio atto e non conserva dati.
 **Debug** (vedere gli errori): da Terminale
 `defaults write com.microsoft.Word OfficeWebAddinDeveloperExtras -bool true`,
 poi tasto destro nel pannello → **Ispeziona elemento**. Funziona solo con Office scaricato da Office.com, non dal Mac App Store.
+
+## 9. Attivare la pertinenza con IA (facoltativo)
+Serve una chiave API Claude (console.anthropic.com), che resta nel Worker e non va mai nella pagina pubblica.
+1. Cloudflare → **Workers & Pages → Create → Worker** → incolla `proxy/worker.js` → **Deploy**.
+2. Nel Worker: **Settings → Variables and Secrets → Add** → tipo **Secret**, nome `ANTHROPIC_API_KEY`, valore la tua chiave → **Deploy**. Facoltativo: variabile `MODELLO` per cambiare modello.
+3. Nel plugin: ⚙︎ → **Indirizzo proxy** = indirizzo del Worker (`https://….workers.dev`) → spunta **Verifica di pertinenza con IA** → **Salva**.
+
+Cosa viene inviato: la frase attorno alla citazione, pseudonimizzata (codici fiscali, IBAN, partite IVA, email e telefoni sostituiti), più il testo della norma restituito da Normattiva. I **nomi propri non vengono rimossi**: evita di attivare la funzione su documenti con dati di clienti che non vuoi inviare. L'esito dell'IA è sempre indicato come «da validare» (art. 13 L. 132/2025). Il costo delle chiamate è a tuo carico secondo il listino API.
 
 ## 8. Ampliare il dizionario degli atti
 In `core.js`, oggetto `ATTI`: aggiungi una riga `'tipo:numero:anno': { data: 'AAAA-MM-GG', nome: '…' }`. Questo serve per le citazioni brevi senza data (es. "D.Lgs. 472/1997"). Tipi: `legge`, `decreto.legislativo`, `decreto.legge`, `decreto.presidente.repubblica`, `regio.decreto`. Le denominazioni abituali (TUIR, c.c., Statuto…) sono nell'elenco `ALIAS`.

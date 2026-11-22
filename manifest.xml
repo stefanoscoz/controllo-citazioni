@@ -10,7 +10,7 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
            xsi:type="TaskPaneApp">
   <Id>dc90d6e2-8c16-4c75-add6-60dc1919b58a</Id>
-  <Version>0.2.1.0</Version>
+  <Version>0.3.0.0</Version>
   <ProviderName>Studio</ProviderName>
   <DefaultLocale>it-IT</DefaultLocale>
   <DisplayName DefaultValue="Controllo citazioni"/>
@@ -81,9 +81,9 @@
                   <Description resid="CC.Context.Tooltip"/>
                 </Supertip>
                 <Icon>
-                  <bt:Image size="16" resid="Icon.16x16"/>
-                  <bt:Image size="32" resid="Icon.32x32"/>
-                  <bt:Image size="80" resid="Icon.80x80"/>
+                  <bt:Image size="16" resid="Consulta.16x16"/>
+                  <bt:Image size="32" resid="Consulta.32x32"/>
+                  <bt:Image size="80" resid="Consulta.80x80"/>
                 </Icon>
                 <Action xsi:type="ShowTaskpane">
                   <TaskpaneId>CC.Taskpane</TaskpaneId>
@@ -99,6 +99,9 @@
       <bt:Images>
         <bt:Image id="Icon.16x16" DefaultValue="https://stefanoscoz.github.io/controllo-citazioni/assets/icon-16.png"/>
         <bt:Image id="Icon.32x32" DefaultValue="https://stefanoscoz.github.io/controllo-citazioni/assets/icon-32.png"/>
+        <bt:Image id="Consulta.16x16" DefaultValue="https://stefanoscoz.github.io/controllo-citazioni/assets/consulta-16.png"/>
+        <bt:Image id="Consulta.32x32" DefaultValue="https://stefanoscoz.github.io/controllo-citazioni/assets/consulta-32.png"/>
+        <bt:Image id="Consulta.80x80" DefaultValue="https://stefanoscoz.github.io/controllo-citazioni/assets/consulta-80.png"/>
         <bt:Image id="Icon.80x80" DefaultValue="https://stefanoscoz.github.io/controllo-citazioni/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
@@ -111,7 +114,7 @@
         <bt:String id="GetStarted.Title" DefaultValue="Controllo citazioni pronto"/>
         <bt:String id="CC.Group.Label" DefaultValue="Citazioni"/>
         <bt:String id="CC.Button.Label" DefaultValue="Controllo citazioni"/>
-        <bt:String id="CC.Context.Label" DefaultValue="Consulta norma"/>
+        <bt:String id="CC.Context.Label" DefaultValue="§ Consulta norma (Normattiva)"/>
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="GetStarted.Description" DefaultValue="Apri il pannello dalla scheda Home e premi Controlla documento."/>

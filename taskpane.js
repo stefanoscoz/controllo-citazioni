@@ -121,6 +121,40 @@
     });
   }
 
+  // ----------------------------------------------------- pertinenza (IA)
+  function iaAttiva() { return leggiImpostazione('ia') === '1' && !!leggiImpostazione('proxy'); }
+
+  function fraseAttorno(c) {
+    var p = (stato.paragrafi && stato.paragrafi[c.paragrafo]) ? stato.paragrafi[c.paragrafo].testo : c.testo;
+    var ini = Math.max(0, c.inizio - 600), fin = Math.min(p.length, c.fine + 400);
+    return CC.pseudonimizza(p.slice(ini, fin));
+  }
+
+  function chiamaPertinenza(c, v) {
+    var corpo = {
+      frase: fraseAttorno(c),
+      citazione: c.testo,
+      testoNorma: String(v.estrattoRif || '').slice(0, 6000),
+      dataRiferimento: stato.dataRif
+    };
+    return fetch(baseApi() + '/pertinenza', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(corpo)
+    }).then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); });
+  }
+
+  function applicaPertinenza(c, v) {
+    if (!iaAttiva() || c.genere !== 'norma' || !v.estrattoRif || (v.esito !== 'ok' && v.esito !== 'mod')) return Promise.resolve(v);
+    return chiamaPertinenza(c, v).then(function (ia) {
+      var giudizio = ia && ia.giudizio;
+      var nota = 'Pertinenza (IA, da validare): ' + (giudizio === 'coerente' ? 'coerente' : giudizio === 'non_pertinente' ? 'la norma non sembra dire ciò che la frase afferma' : 'dubbia') + (ia.motivazione ? ' — ' + ia.motivazione : '');
+      var out = Object.assign({}, v, { ia: ia, motivo: v.motivo.replace(' Pertinenza non valutata in questa versione.', '') + ' ' + nota });
+      if (giudizio === 'non_pertinente' || giudizio === 'dubbia') out.esito = v.esito === 'mod' ? 'mod' : 'dub';
+      return out;
+    }).catch(function (e) {
+      return Object.assign({}, v, { motivo: v.motivo + ' Pertinenza (IA) non disponibile: ' + (e && e.message ? e.message : 'errore') + '.' });
+    });
+  }
+
   // ------------------------------------------------------------------- Word
   function leggiDocumento() {
     return Word.run(function (ctx) {
@@ -216,7 +250,7 @@
     var n = conteggio();
     var esiti = [n.ok + ' verificate', n.mod + ' modificate', n.dub + ' con pertinenza dubbia', n.nv + ' non verificabili', n.ko + ' non trovate'].join(', ');
     var riga1 = 'Nota di verifica — citazioni controllate il ' + formatoData(oggiISO()) + ' alle ' + stato.ora +
-      ' con Controllo citazioni 0.2; data di riferimento ' + formatoData(stato.dataRif) + '. Esiti: ' + esiti + '.';
+      ' con Controllo citazioni 0.3; data di riferimento ' + formatoData(stato.dataRif) + '. Esiti: ' + esiti + '.';
     var nome = leggiImpostazione('nome') || '[professionista]';
     var riga2 = validata
       ? 'Verifica del professionista: eseguita da ' + nome + ' il ' + formatoData(oggiISO()) + '.'
@@ -280,6 +314,7 @@
     $('btnAvvia').disabled = true;
     $('avanzamento').textContent = 'Lettura del documento…';
     leggiDocumento().then(function (doc) {
+      stato.paragrafi = doc.paragrafi;
       stato.citazioni = CC.estraiCitazioni(doc.paragrafi);
       if (!stato.citazioni.length) { $('avanzamento').textContent = 'Nessuna citazione trovata nel documento.'; return null; }
       var fatte = 0;
@@ -287,7 +322,7 @@
       return stato.citazioni.reduce(function (p, c) {
         return p.then(function () {
           $('avanzamento').textContent = 'Verifica ' + (++fatte) + ' di ' + stato.citazioni.length + ': ' + c.testo.slice(0, 60);
-          return verificaCitazione(c).then(function (v) { c.verifica = v; });
+          return verificaCitazione(c).then(function (v) { return applicaPertinenza(c, v); }).then(function (v) { c.verifica = v; });
         });
       }, Promise.resolve()).then(function () {
         var d = new Date(); stato.ora = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
@@ -461,11 +496,54 @@
     });
   }
 
+  // --- resa leggibile del testo di una norma
+  function conSegni(testoEsc) {
+    // ((testo)) = testo inserito o modificato secondo la convenzione di Normattiva
+    return testoEsc.replace(/\(\(\s*([\s\S]*?)\s*\)\)/g, '<mark class="modificato" title="Testo inserito o modificato">$1</mark>');
+  }
+
+  function htmlNorma(html, c, soloComma) {
+    var testo = CC.testoDaHtml(html);
+    var abr = CC.abrogazione(testo);
+    if (abr) return '<div class="norma"><div class="abrogato">' + esc(abr.cosa.charAt(0).toUpperCase() + abr.cosa.slice(1)) + ' abrogato<br><span style="font-weight:400;font-size:.9em">' + esc(abr.da) + '</span></div></div>';
+    var st = CC.strutturaNorma(testo);
+    var citato = c && c.comma ? String(c.comma).replace(/(\d+)([a-z]+)/i, '$1-$2') : null;
+    var commi = st.commi;
+    if (soloComma && citato) {
+      var f = commi.filter(function (k) { return k.numero.toLowerCase() === citato.toLowerCase(); });
+      if (f.length) commi = f;
+    }
+    var h = '<div class="norma" id="testoNorma">';
+    if (st.preambolo.length && !soloComma) h += '<div class="preambolo">' + st.preambolo.map(function (r) { return conSegni(esc(r)); }).join('<br>') + '</div>';
+    commi.forEach(function (k, i) {
+      var isCit = citato && k.numero.toLowerCase() === citato.toLowerCase();
+      h += '<div class="comma' + (isCit ? ' citato' : '') + '" id="comma-' + esc(k.numero || i) + '">' +
+        '<span class="num' + (k.implicito ? ' implicito' : '') + '" title="' + (k.implicito ? 'Comma (capoverso) n. ' : 'Comma ') + esc(k.numero) + '">' + esc(k.numero) + '</span><div class="corpo">';
+      var testoP = k.righe.filter(function (r) { return !r.lettera; });
+      var voci = k.righe.filter(function (r) { return r.lettera; });
+      h += testoP.map(function (r) { return '<p>' + conSegni(esc(r.testo)) + '</p>'; }).join('');
+      if (voci.length) h += '<ol>' + voci.map(function (r) { return '<li><span class="let">' + esc(r.lettera) + ')</span><span>' + conSegni(esc(r.testo)) + '</span></li>'; }).join('') + '</ol>';
+      h += '</div></div>';
+    });
+    if (!commi.length) h += '<p>' + conSegni(esc(testo)) + '</p>';
+    return h + '</div>';
+  }
+
+  function htmlNavigaCommi(html, c) {
+    var st = CC.strutturaNorma(CC.testoDaHtml(html));
+    if (st.commi.length < 2) return '';
+    var citato = c && c.comma ? String(c.comma).replace(/(\d+)([a-z]+)/i, '$1-$2').toLowerCase() : null;
+    var elenco = st.commi.slice(0, 60);
+    return '<div class="naviga-commi"><span>Commi:</span>' + elenco.map(function (k) {
+      return '<button type="button" data-comma="' + esc(k.numero) + '" class="' + (k.numero.toLowerCase() === citato ? 'citato' : '') + '">' + esc(k.numero) + '</button>';
+    }).join('') + (st.commi.length > 60 ? '<span>… ' + st.commi.length + ' commi</span>' : '') + '</div>';
+  }
+
   function parteDaMostrare(html, c) {
     var testo = CC.testoDaHtml(html);
-    if ($('chkSoloComma').checked && c.comma) {
+    if (c && c.comma) {
       var cm = CC.estraiComma(testo, c.comma);
-      if (cm) return { testo: cm, comma: true };
+      if (cm && $('chkSoloComma').checked) return { testo: cm, comma: true };
     }
     return { testo: testo, comma: false };
   }
@@ -499,7 +577,7 @@
       out.innerHTML = '<p class="avvertenza">' + esc(c && c.atto && c.atto.errore ? c.atto.errore + '.' : 'Non riconosco la norma. Scrivi gli estremi completi, es. «art. 19 DPR 633/72» o «art. 2423 c.c.». Se il riferimento è solo «art. 5», aggiungi l\'atto.') + '</p>';
       return;
     }
-    consulta.inCorso = true; consulta.cit = c; consulta.ultima = testoCit;
+    consulta.inCorso = true; consulta.cit = c; consulta.ultima = testoCit; consulta.vista = 'testo'; consulta.versioneVista = null;
     out.innerHTML = '<p class="aiuto">Ricerca su Normattiva e ricostruzione delle versioni…</p>';
     var urn = c.genere === 'atto' ? c.atto.urn : CC.urnArticolo(c);
     (c.genere === 'atto' ? chiamataAllaData(urn, data).then(function (r) { return r.trovato ? { trovato: true, versioni: [r], attiva: 0, affidabile: true } : r; }) : versioniArticolo(urn, data))
@@ -508,64 +586,118 @@
       .then(function () { consulta.inCorso = false; });
   }
 
+  function periodo(v) {
+    var futura = v.inizioVig && v.inizioVig > oggiISO();
+    return (v.inizioVig ? 'dal ' + formatoData(v.inizioVig) : 'dall\'origine') + (v.fineVig ? ' al ' + formatoData(v.fineVig) : (futura ? '' : ' a oggi'));
+  }
+
   function renderConsulta(c, r, data, urn) {
     var out = $('consRisultato');
     var link = CC.linkNormattiva(urn, data);
+    consulta.link = link; consulta.vista = consulta.vista || 'testo'; consulta.versioneVista = null;
     if (r.errore) { out.innerHTML = '<p class="avvertenza">Normattiva non raggiungibile (' + esc(r.errore) + ').</p><a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>'; return; }
     if (r.multiplo) { out.innerHTML = '<p class="avvertenza">Più atti corrispondono: indica la data completa dell\'atto.</p>'; return; }
-    if (!r.trovato) { out.innerHTML = '<p class="avvertenza">Normattiva non restituisce l\'articolo indicato.</p><a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>'; return; }
+    if (!r.trovato) { out.innerHTML = '<p class="avvertenza">' + (r.nonAncoraVigente ? 'Alla data indicata l\'articolo non esisteva ancora o non era vigente.' : 'Normattiva non restituisce l\'articolo indicato. Controlla gli estremi.') + '</p><a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>'; return; }
 
     var att = r.versioni[r.attiva];
-    var artRest = CC.articoloRestituito(CC.testoDaHtml(att.html));
-    var h = '<div style="display:flex;flex-direction:column;gap:12px">';
-    h += '<div><p class="cons-titolo">' + esc(c.testo) + '</p><p class="cons-sotto">' + esc((c.atto.nome || c.atto.urn)) + '</p></div>';
-    if (c.genere === 'norma' && artRest && artRest !== c.articolo) {
-      h += '<p class="avvertenza">Attenzione: Normattiva restituisce l\'art. ' + esc(artRest) + ' e non l\'art. ' + esc(c.articoloTesto) + '. Il riferimento potrebbe essere errato.</p>';
+    var testoAtt = CC.testoDaHtml(att.html);
+    var st = CC.strutturaNorma(testoAtt);
+    var artRest = CC.articoloRestituito(testoAtt);
+    var ultima = r.versioni[r.versioni.length - 1];
+    var abrAtt = CC.abrogazione(testoAtt);
+    var abrUlt = ultima !== att ? CC.abrogazione(CC.testoDaHtml(ultima.html)) : null;
+
+    var stati = '';
+    if (c.genere === 'norma') {
+      stati += abrAtt ? '<span class="stato abr">Abrogato al ' + esc(formatoData(data)) + '</span>'
+        : '<span class="stato ok">In vigore al ' + esc(formatoData(data)) + '</span>';
+      stati += '<span class="stato">Versione ' + esc(periodo(att)) + '</span>';
+      if (abrUlt) stati += '<span class="stato ' + (ultima.inizioVig > oggiISO() ? 'fut' : 'abr') + '">Abrogato dal ' + esc(formatoData(ultima.inizioVig)) + (ultima.inizioVig > oggiISO() ? ' (futuro)' : '') + '</span>';
+      else if (r.versioni.length > 1 && ultima !== att) stati += '<span class="stato mod">Modificato dal ' + esc(formatoData(ultima.inizioVig)) + (ultima.inizioVig > oggiISO() ? ' (futuro)' : '') + '</span>';
     }
-    if (!r.affidabile) {
-      h += '<p class="avvertenza">La versione restituita è in vigore dal ' + esc(formatoData(att.inizioVig)) + ', dopo la data richiesta: l\'articolo non esisteva ancora oppure la versione storica non è disponibile.</p>';
-    }
-    var righe = riepilogoTesto(c, r, data);
-    h += '<div class="riepilogo"><strong>Riepilogo multivigenza</strong><span>' + righe.slice(1, -1).map(esc).join('<br>') + '</span>' +
-      '<div class="riga-pulsanti"><button type="button" class="secondario" id="btnCommRiep">Inserisci come commento</button>' +
-      '<button type="button" class="secondario" id="btnCopiaRiep">Copia</button></div></div>';
-    if (r.versioni.length > 1) {
-      h += '<div class="det-blocco"><h3>Versioni dell\'articolo</h3><ul class="versioni">' + r.versioni.map(function (v, i) {
-        var oggi = oggiISO();
-        var futura = v.inizioVig && v.inizioVig > oggi;
-        var corrente = (!v.inizioVig || v.inizioVig <= oggi) && (!v.fineVig || v.fineVig >= oggi);
-        var abr = CC.abrogazione(CC.testoDaHtml(v.html));
-        var periodo = (v.inizioVig ? 'dal ' + formatoData(v.inizioVig) : 'origine') + (v.fineVig ? ' al ' + formatoData(v.fineVig) : (futura ? '' : ' → oggi'));
-        var badges = (i === r.attiva ? '<span class="badge">al ' + esc(formatoData(data)) + '</span>' : '') +
-          (abr ? '<span class="badge" style="background:#FCE9E7;color:#B42318">abrogato</span>' : '') +
-          (futura ? '<span class="badge" style="background:#E8F0FA;color:#1D4F8C">futura</span>' : (corrente && i !== r.attiva ? '<span class="badge oggi">vigente oggi</span>' : ''));
-        return '<li class="' + (i === r.attiva ? 'attiva' : '') + '"><div class="ver-testa"><strong>' + (i + 1) + '</strong><span>' + esc(periodo) + '</span>' + badges + '</div>' +
-          '<div class="ver-azioni"><button type="button" data-ver="' + i + '">Testo</button>' + (i > 0 ? '<button type="button" data-diff="' + i + '">Differenze con la ' + i + '</button>' : '') + '</div></li>';
-      }).join('') + '</ul></div>';
-    }
-    var parte = parteDaMostrare(att.html, c);
-    h += '<div class="det-blocco"><h3 id="titTesto">Testo vigente al ' + esc(formatoData(data)) + (parte.comma ? ' · comma ' + esc(c.commaTesto) : '') + '</h3><div class="estratto" id="testoVer">' + esc(parte.testo.slice(0, 6000)) + '</div></div>';
-    h += '<a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>';
-    h += '<p class="aiuto">Le versioni sono ricostruite dalle date di vigenza fornite da Normattiva (max 16). Fonte: Normattiva (IPZS), testo non ufficiale.</p></div>';
+
+    var h = '<header class="scheda-norma"><span class="sn-atto">' + esc(c.atto.nome || c.atto.urn) + '</span>' +
+      '<h2 class="sn-titolo">' + esc(st.titolo || (c.genere === 'norma' ? 'Art. ' + c.articoloTesto : c.testo)) +
+      (c.comma ? ', comma ' + esc(c.commaTesto) : '') + (st.rubrica ? '<span class="rubrica">' + conSegni(esc(st.rubrica)) + '</span>' : '') + '</h2>' +
+      (stati ? '<div class="sn-stati">' + stati + '</div>' : '') + '</header>';
+    if (c.genere === 'norma' && artRest && artRest !== c.articolo) h += '<p class="avvertenza">Normattiva restituisce l\'art. ' + esc(artRest) + ' e non l\'art. ' + esc(c.articoloTesto) + ': il riferimento potrebbe essere errato.</p>';
+    if (!r.affidabile) h += '<p class="avvertenza">La versione restituita è in vigore ' + esc(periodo(att)) + ', dopo la data richiesta: l\'articolo non esisteva ancora oppure la versione storica non è disponibile.</p>';
+
+    var nVer = r.versioni.length;
+    h += '<nav class="sotto-schede" role="tablist" aria-label="Sezioni della norma">' +
+      '<button type="button" role="tab" data-sotto="testo">Testo</button>' +
+      (c.genere === 'norma' ? '<button type="button" role="tab" data-sotto="versioni">Versioni (' + nVer + (r.troncato ? '+' : '') + ')</button>' : '') +
+      '<button type="button" role="tab" data-sotto="riepilogo">Riepilogo</button></nav>';
+    h += '<div id="pannelloSotto"></div>';
     out.innerHTML = h;
+    mostraSotto(consulta.vista === 'versioni' && c.genere !== 'norma' ? 'testo' : consulta.vista);
+  }
+
+  function mostraSotto(nome) {
+    var r = consulta.versioni, c = consulta.cit, data = $('inDataCons').value || oggiISO();
+    if (!r || !r.trovato) return;
+    consulta.vista = nome;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-sotto]'), function (b) { b.setAttribute('aria-selected', String(b.getAttribute('data-sotto') === nome)); });
+    var p = $('pannelloSotto'), h = '';
+    if (nome === 'testo') {
+      var i = consulta.versioneVista != null ? consulta.versioneVista : r.attiva;
+      var v = r.versioni[i];
+      if (i !== r.attiva) h += '<div class="banner-versione"><span>Stai leggendo la versione ' + (i + 1) + ' (' + esc(periodo(v)) + ')</span><button type="button" data-azione="torna">Torna al ' + esc(formatoData(data)) + '</button></div>';
+      if (!$('chkSoloComma').checked) h += htmlNavigaCommi(v.html, c);
+      h += htmlNorma(v.html, c, $('chkSoloComma').checked);
+      if (/\(\(/.test(v.html)) h += '<p class="legenda"><mark>evidenziato</mark> testo inserito o modificato (tra doppie parentesi in Normattiva)</p>';
+      h += '<a href="' + esc(CC.linkNormattiva(c.genere === 'atto' ? c.atto.urn : CC.urnArticolo(c), v.inizioVig || data)) + '" target="_blank" rel="noopener">Apri questa versione su Normattiva</a>';
+    } else if (nome === 'versioni') {
+      h += '<ol class="timeline">' + r.versioni.map(function (v, k) {
+        var futura = v.inizioVig && v.inizioVig > oggiISO();
+        var corrente = !futura && (!v.fineVig || v.fineVig >= oggiISO());
+        var abr = CC.abrogazione(CC.testoDaHtml(v.html));
+        var badge = (k === r.attiva ? '<span class="stato mod">applicabile al ' + esc(formatoData(data)) + '</span>' : '') +
+          (abr ? '<span class="stato abr">abrogazione</span>' : '') +
+          (futura ? '<span class="stato fut">futura</span>' : (corrente ? '<span class="stato ok">in vigore oggi</span>' : ''));
+        return '<li class="' + [k === r.attiva ? 'attiva' : '', futura ? 'futura' : '', abr ? 'abrogata' : ''].join(' ') + '">' +
+          '<div class="tl-testa"><strong>' + (k + 1) + '</strong><span>' + esc(periodo(v)) + '</span>' + badge + '</div>' +
+          '<div class="tl-azioni"><button type="button" data-ver="' + k + '">Leggi</button>' + (k > 0 ? '<button type="button" data-diff="' + k + '">Cosa è cambiato</button>' : '') + '</div></li>';
+      }).join('') + '</ol>';
+      if (r.troncato) h += '<p class="aiuto">Mostrate 16 versioni attorno alla data scelta: per le altre cambia la data.</p>';
+    } else {
+      var righe = riepilogoTesto(c, r, data);
+      h += '<div class="riep"><p style="margin:0">' + righe.slice(1, -1).map(esc).join('<br>') + '</p>' +
+        '<div class="riga-pulsanti"><button type="button" class="secondario" id="btnCommRiep">Inserisci come commento</button><button type="button" class="secondario" id="btnCopiaRiep">Copia</button></div>' +
+        '<p class="aiuto">' + esc(righe[righe.length - 1]) + '</p></div>';
+    }
+    p.innerHTML = h;
+    if (nome === 'testo') {
+      var el = document.querySelector('#testoNorma .comma.citato');
+      var box = $('testoNorma');
+      if (el && box) box.scrollTop = Math.max(0, el.offsetTop - box.offsetTop - 8);
+    }
   }
 
   function mostraVersione(i, diff) {
     var r = consulta.versioni, c = consulta.cit;
     if (!r || !r.versioni[i]) return;
-    var v = r.versioni[i];
-    var periodo = (v.inizioVig ? 'dal ' + formatoData(v.inizioVig) : '') + (v.fineVig ? ' al ' + formatoData(v.fineVig) : ' → oggi');
-    if (!diff) {
-      var p = parteDaMostrare(v.html, c);
-      $('titTesto').textContent = 'Versione ' + (i + 1) + ' (' + periodo + ')' + (p.comma ? ' · comma ' + c.commaTesto : '');
-      $('testoVer').textContent = p.testo.slice(0, 6000);
-    } else {
-      var a = parteDaMostrare(r.versioni[i - 1].html, c).testo, b = parteDaMostrare(v.html, c).testo;
-      var seg = CC.confrontaParole(a, b);
-      $('titTesto').textContent = 'Differenze: versione ' + i + ' → versione ' + (i + 1) + ' (' + periodo + ')';
-      $('testoVer').innerHTML = seg ? renderConfronto(seg) : esc('Testo troppo lungo per il confronto: attiva «Mostra solo il comma citato».');
+    if (!diff) { consulta.versioneVista = i; mostraSotto('testo'); return; }
+    function parte(html) {
+      var t = CC.testoDaHtml(html);
+      var cm = c && c.comma ? CC.estraiComma(t, c.comma) : null;
+      return { testo: (cm || t).replace(/\(\(\s*|\s*\)\)/g, ''), comma: !!cm };
     }
-    var tv = $('testoVer'); if (tv.scrollIntoView) tv.scrollIntoView({ block: 'nearest' });
+    var pa = parte(r.versioni[i - 1].html), pb = parte(r.versioni[i].html);
+    var a = pa.testo, b = pb.testo;
+    var seg = CC.confrontaParole(a, b, 4000);
+    var cambiato = !seg || seg.some(function (x) { return x.tipo !== '='; });
+    if (!cambiato && pb.comma) {
+      var ta = CC.testoDaHtml(r.versioni[i - 1].html).replace(/\(\(\s*|\s*\)\)/g, ''), tb = CC.testoDaHtml(r.versioni[i].html).replace(/\(\(\s*|\s*\)\)/g, '');
+      var segA = CC.confrontaParole(ta, tb, 6000);
+      consulta.diffArticolo = segA;
+    }
+    consulta.vista = 'testo';
+    Array.prototype.forEach.call(document.querySelectorAll('[data-sotto]'), function (bt) { bt.setAttribute('aria-selected', String(bt.getAttribute('data-sotto') === 'testo')); });
+    $('pannelloSotto').innerHTML = '<div class="banner-versione"><span>Cosa è cambiato: versione ' + i + ' → ' + (i + 1) + ' (' + esc(periodo(r.versioni[i])) + ')' + (pb.comma ? ' · comma ' + esc(c.commaTesto) : ' · articolo intero') + '</span><button type="button" data-azione="torna">Chiudi</button></div>' +
+      (!cambiato ? '<p class="avvertenza" style="color:#17694D;background:#E6F2EC">Nessuna modifica in questo comma tra le due versioni: il cambiamento riguarda altre parti dell\'articolo.</p>' : '') +
+      '<div class="norma" style="padding:12px">' + (seg ? renderConfronto(!cambiato && consulta.diffArticolo ? consulta.diffArticolo : seg) : esc('Testo troppo lungo per il confronto: attiva «Mostra solo il comma citato».')) + '</div>' +
+      '<p class="legenda"><span class="del" style="background:#FCE9E7;color:#8F1C13;text-decoration:line-through;padding:0 4px">tolto</span><span style="background:#E6F2EC;color:#17694D;font-weight:700;padding:0 4px">aggiunto</span></p>';
   }
 
   function inserisciCommentoRiepilogo() {
@@ -671,6 +803,13 @@
 
     $('inNome').value = leggiImpostazione('nome');
     $('inProxy').value = leggiImpostazione('proxy');
+    $('chkIA').checked = leggiImpostazione('ia') === '1';
+    function aggiornaStatoIA() {
+      var on = iaAttiva();
+      $('livelloIA').className = on ? '' : 'disattivo';
+      $('statoIA').textContent = on ? 'attiva: la frase viene confrontata con il testo della norma (testo pseudonimizzato)' : (leggiImpostazione('ia') === '1' ? 'manca l\'indirizzo del proxy nelle impostazioni' : 'non attiva: abilitala nelle impostazioni');
+    }
+    aggiornaStatoIA();
     $('inData').value = oggiISO();
 
     leggiDocumento().then(function (doc) {
@@ -712,6 +851,8 @@
     $('btnSalva').addEventListener('click', function () {
       scriviImpostazione('nome', $('inNome').value.trim());
       scriviImpostazione('proxy', $('inProxy').value.trim());
+      scriviImpostazione('ia', $('chkIA').checked ? '1' : '0');
+      aggiornaStatoIA();
       stato.cache = {};
       messaggio('Impostazioni salvate.');
     });
@@ -721,15 +862,26 @@
     $('inDataCons').value = oggiISO();
     $('tabControllo').addEventListener('click', function () { mostra(stato.citazioni.length && stato.citazioni[0].verifica ? 'vistaRiepilogo' : 'vistaAvvio'); });
     $('tabConsulta').addEventListener('click', function () { mostra('vistaConsulta'); consultaDaSelezione(false); });
-    $('btnCerca').addEventListener('click', function () { if ($('inCit').value.trim()) { consulta.ultima = null; avviaConsulta($('inCit').value.trim()); } });
-    $('inCit').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnCerca').click(); });
+    $('formCerca').addEventListener('submit', function (e) { e.preventDefault(); if ($('inCit').value.trim()) { consulta.ultima = null; avviaConsulta($('inCit').value.trim()); } });
+    var fs = parseInt(leggiImpostazione('fs'), 10) || 14;
+    function applicaFs() { document.documentElement.style.setProperty('--fs', fs + 'px'); scriviImpostazione('fs', String(fs)); }
+    applicaFs();
+    $('btnTestoMeno').addEventListener('click', function () { fs = Math.max(12, fs - 1); applicaFs(); });
+    $('btnTestoPiu').addEventListener('click', function () { fs = Math.min(20, fs + 1); applicaFs(); });
     $('inDataCons').addEventListener('change', function () { if (consulta.cit) { stato.cache = stato.cache || {}; avviaConsulta($('inCit').value.trim()); } });
-    $('chkSoloComma').addEventListener('change', function () { if (consulta.versioni && consulta.versioni.trovato) renderConsulta(consulta.cit, consulta.versioni, $('inDataCons').value || oggiISO(), consulta.cit.genere === 'atto' ? consulta.cit.atto.urn : CC.urnArticolo(consulta.cit)); });
+    $('chkSoloComma').checked = leggiImpostazione('soloComma') === '1';
+    $('chkSoloComma').addEventListener('change', function () { scriviImpostazione('soloComma', $('chkSoloComma').checked ? '1' : '0'); if (consulta.versioni && consulta.versioni.trovato) mostraSotto('testo'); });
     $('btnSugg').addEventListener('click', function () { mostra('vistaConsulta'); avviaConsulta($('btnSugg').getAttribute('data-cit')); });
     $('consRisultato').addEventListener('click', function (ev) {
       var b = ev.target.closest ? ev.target.closest('button') : null;
       if (!b) return;
-      if (b.id === 'btnCommRiep') inserisciCommentoRiepilogo();
+      if (b.hasAttribute('data-sotto')) { consulta.versioneVista = null; mostraSotto(b.getAttribute('data-sotto')); }
+      else if (b.getAttribute('data-azione') === 'torna') { consulta.versioneVista = null; mostraSotto('testo'); }
+      else if (b.hasAttribute('data-comma')) {
+        var el = document.getElementById('comma-' + b.getAttribute('data-comma')), box = $('testoNorma');
+        if (el && box) box.scrollTop = Math.max(0, el.offsetTop - box.offsetTop - 8);
+      }
+      else if (b.id === 'btnCommRiep') inserisciCommentoRiepilogo();
       else if (b.id === 'btnCopiaRiep') copiaRiepilogo();
       else if (b.hasAttribute('data-ver')) mostraVersione(parseInt(b.getAttribute('data-ver'), 10), false);
       else if (b.hasAttribute('data-diff')) mostraVersione(parseInt(b.getAttribute('data-diff'), 10), true);

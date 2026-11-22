@@ -110,4 +110,12 @@ t('abrogato alla data -> Non trovata bloccante', () => {
 });
 t('URN dei D.P.R. nel formato Normattiva', () => assert.strictEqual(CC.urnArticolo(una('art. 10 DPR 633/72')[0]), 'urn:nir:stato:decreto.del.presidente.della.repubblica:1972-10-26;633~art10'));
 t('articolo non ancora esistente alla data -> Non trovata', () => { const v = CC.valutaNorma(una('art. 2409 c.c.')[0], { trovato: false, nonAncoraVigente: true }, null, '1940-01-01'); assert.strictEqual(v.esito, 'ko'); });
+console.log('Struttura del testo per la lettura');
+t('codice civile: commi non numerati e righe spezzate dalle modifiche', () => {
+  const st = CC.strutturaNorma(CC.testoDaHtml('<div>Art. 2423.<br><br><div>(Redazione del bilancio).</div><div>Gli amministratori devono redigere il bilancio, costituito dal conto economico</div><div>((, dal rendiconto finanziario))</div><div>e dalla nota integrativa.<br><br>Il bilancio deve essere redatto con chiarezza.</div></div>'));
+  assert.strictEqual(st.rubrica, 'Redazione del bilancio'); assert.strictEqual(st.commi.length, 2); assert.ok(st.commi[0].righe[0].testo.includes('((, dal rendiconto finanziario))'));
+});
+t('comma 2 c.c. = secondo capoverso', () => assert.strictEqual(CC.estraiComma(CC.testoDaHtml('<p>Art. 2423.</p><p>(Redazione del bilancio).</p><p>Primo capoverso.</p><p>Secondo capoverso.</p>'), '2'), 'Secondo capoverso.'));
+t('elenco numerato "1)" come voci del comma (art. 10 IVA)', () => { const st = CC.strutturaNorma(CC.testoDaHtml('<h2>Art. 10</h2><div>Operazioni esenti</div><div>Sono esenti:<br>1) le prestazioni;<br>27-quater) altre;</div>')); assert.strictEqual(st.commi.length, 1); assert.strictEqual(st.commi[0].righe[2].lettera, '27-quater'); });
+t('pseudonimizzazione', () => { const p = CC.pseudonimizza('RSSMRA80A01H501U, IT60X0542811101000000123456, mario@studio.it'); assert.ok(!/RSSMRA|IT60|mario@/.test(p)); });
 console.log('\n' + ok + ' test superati' + (process.exitCode ? ' — CI SONO ERRORI' : ''));
