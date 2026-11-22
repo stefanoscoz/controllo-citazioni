@@ -1,0 +1,100 @@
+# Controllo citazioni — componente aggiuntivo per Word (v0.1)
+
+Pannello laterale per Word che legge il documento, trova le citazioni e le controlla:
+
+| Livello | Cosa fa nella v0.1 |
+|---|---|
+| 1 · Esistenza | Interroga l'API Open Data di **Normattiva**. Verifica che l'articolo restituito sia quello citato e che il comma e la lettera esistano. Segnala le sentenze con data impossibile (es. 30 febbraio). |
+| 2 · Vigenza alla data | Confronta il testo del comma **vigente alla data di riferimento** con quello **vigente oggi** e mostra le differenze. |
+| 3 · Pertinenza (IA) | Non ancora attiva: richiede un server per custodire la chiave API (prevista nella v0.2). |
+
+Sul documento il plugin aggiunge **riquadri colorati** attorno alle citazioni (content control) e **commenti** con l'esito. Può inserire una **nota di verifica** e un **registro** in fondo al documento. Il testo del documento non viene mai riscritto. Il pulsante "Rimuovi marcature" toglie tutto.
+
+Funziona senza server: è una pagina statica pubblicata su **GitHub Pages**, come il plugin Excel.
+
+---
+
+## Contenuto della cartella
+
+```
+manifest.xml        ← il file da caricare in Word (va personalizzato, passo 3)
+taskpane.html/.css/.js  pannello
+core.js             logica di estrazione e verifica (nessuna dipendenza)
+commands.html       file richiesto da Word per il pulsante nella barra
+assets/             icone
+proxy/worker.js     proxy di riserva, solo se serve (passo 6)
+test/core.test.js   test della logica (node test/core.test.js)
+.nojekyll           evita che GitHub Pages rielabori i file
+```
+
+## 1. Crea il repository su GitHub
+1. Su github.com: **New repository** → nome `controllo-citazioni` → **Public** → Create.
+2. **Add file → Upload files** e trascina **tutto il contenuto** di questa cartella, compresa la cartella `assets`. Conferma con **Commit changes**.
+   *(Se usi Git dal Terminale: `git init`, `git add .`, `git commit -m "v0.1"`, `git push`.)*
+
+## 2. Attiva GitHub Pages
+**Settings → Pages → Build and deployment → Source: Deploy from a branch → Branch: `main` / `(root)` → Save.**
+Dopo 1–2 minuti la pagina è online all'indirizzo `https://TUO-UTENTE.github.io/controllo-citazioni/`.
+Prova ad aprire nel browser `…/controllo-citazioni/taskpane.html`: deve comparire il pannello (fuori da Word mostrerà solo l'interfaccia).
+
+## 3. Personalizza il manifest
+Nel `manifest.xml` sostituisci **tutte** le occorrenze di `TUO-UTENTE` con il tuo nome utente GitHub. Da Terminale, nella cartella del progetto:
+
+```bash
+sed -i '' 's#TUO-UTENTE#il-tuo-utente#g' manifest.xml
+```
+
+Se hai dato al repository un nome diverso da `controllo-citazioni`, sostituisci anche quello. Facoltativo: cambia `<ProviderName>` con il nome dello studio. Poi ricarica su GitHub il manifest aggiornato.
+
+Controllo facoltativo del manifest con lo strumento ufficiale Microsoft (serve Node.js): `npx office-addin-manifest validate manifest.xml`
+
+## 4. Carica il plugin in Word per Mac
+1. Chiudi Word.
+2. Finder → **Cmd+Shift+G** → incolla:
+   `~/Library/Containers/com.microsoft.Word/Data/Documents/wef`
+   (se la cartella `wef` non esiste, creala).
+3. Copia lì dentro il tuo `manifest.xml` personalizzato.
+4. Apri Word e un documento → **Home → Componenti aggiuntivi** → **Controllo citazioni**. Nella scheda Home compare anche il pulsante del gruppo "Citazioni".
+
+## 5. Primo utilizzo
+1. Icona ⚙︎ in alto a destra nel pannello → inserisci il tuo **nome** → **Salva**.
+2. Premi **Test connessione**:
+   - `✓ Statuto del contribuente, art. 10: restituito art. 10` → tutto a posto;
+   - `⚠ Codice civile…: restituito art. X` → il numero di allegato del codice civile va corretto in `core.js` (voce `regio.decreto:262:1942`, campo `allegato`);
+   - `✗ … rete o CORS` → vai al passo 6.
+3. Controlla la **data di riferimento**: il plugin la ricava dal testo (es. «periodo d'imposta 2022» → 31/12/2022), ma puoi cambiarla.
+4. **Controlla documento** e leggi gli esiti nel pannello. "Dettaglio" mostra il confronto tra le versioni della norma.
+
+## 6. Se il test fallisce per CORS (proxy di riserva)
+Il browser di Word blocca le chiamate verso siti che non autorizzano esplicitamente la tua pagina. Se succede con Normattiva:
+1. Crea un account gratuito su Cloudflare → **Workers & Pages → Create → Worker**.
+2. Incolla il contenuto di `proxy/worker.js`, sostituisci `TUO-UTENTE` in `ORIGINE` → **Deploy**.
+3. Copia l'indirizzo del worker (`https://….workers.dev`) nelle impostazioni del plugin, campo **Indirizzo proxy** → **Salva** → **Test connessione**.
+
+Il proxy inoltra solo le richieste di dettaglio atto e non conserva dati.
+
+## 7. Aggiornare il plugin
+Modifica i file e ricaricali su GitHub. Word per Mac tiene una copia in memoria: se non vedi le modifiche, chiudi Word e svuota la cache cancellando il contenuto di:
+`~/Library/Containers/com.Microsoft.OsfWebHost/Data/`
+(il manifest nella cartella `wef` lascialo). Se cambi il manifest, ricopialo in `wef`.
+
+**Debug** (vedere gli errori): da Terminale
+`defaults write com.microsoft.Word OfficeWebAddinDeveloperExtras -bool true`,
+poi tasto destro nel pannello → **Ispeziona elemento**. Funziona solo con Office scaricato da Office.com, non dal Mac App Store.
+
+## 8. Ampliare il dizionario degli atti
+In `core.js`, oggetto `ATTI`: aggiungi una riga `'tipo:numero:anno': { data: 'AAAA-MM-GG', nome: '…' }`. Questo serve per le citazioni brevi senza data (es. "D.Lgs. 472/1997"). Tipi: `legge`, `decreto.legislativo`, `decreto.legge`, `decreto.presidente.repubblica`, `regio.decreto`. Le denominazioni abituali (TUIR, c.c., Statuto…) sono nell'elenco `ALIAS`.
+
+Dopo ogni modifica: `node test/core.test.js` (serve Node.js).
+
+---
+
+## Limiti noti della v0.1 — da conoscere prima dell'uso
+- **Non collaudato dal vivo su Normattiva.** La logica è testata con risposte simulate. Il formato reale delle risposte e l'accettazione della sintassi `!vig=` nell'API vanno confermati con il Test connessione. Se `!vig=` non viene accettato, il plugin ripiega sul testo attuale e lo dichiara nell'esito.
+- **Sentenze:** solo controllo formale delle date. L'esistenza su SentenzeWeb non è ancora verificata (esito "Non verificabile").
+- **Prassi** (circolari, risoluzioni, interpelli): sempre "Non verificabile".
+- **Abrogazione implicita:** Normattiva non la registra, quindi il plugin non può segnalarla.
+- Riconosce le forme di citazione più comuni (art./comma/lett. + atto, alias, "della medesima legge"). Citazioni scritte in modo insolito possono sfuggire: il plugin le mostra come "Atto non riconosciuto".
+- Gli esiti sono un **supporto**: la verifica e la responsabilità restano del professionista (art. 13 L. 132/2025; art. 21 Codice deontologico).
+
+**Fonte dei testi:** Normattiva (IPZS). Testi non ufficiali; fa fede la Gazzetta Ufficiale.

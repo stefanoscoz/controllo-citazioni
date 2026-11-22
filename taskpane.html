@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Controllo citazioni</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <link rel="stylesheet" href="taskpane.css">
+</head>
+<body>
+  <header class="testata">
+    <span class="marchio" aria-hidden="true">§</span>
+    <div class="testata-testi">
+      <span class="titolo">Controllo citazioni</span>
+      <span class="sottotitolo">versione 0.1</span>
+    </div>
+    <button type="button" class="icona" id="btnImpostazioni" aria-label="Impostazioni" aria-expanded="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+    </button>
+  </header>
+
+  <!-- Impostazioni -->
+  <section id="impostazioni" class="pannello-impostazioni" hidden>
+    <label for="inNome">Nome del professionista</label>
+    <input id="inNome" type="text" placeholder="Es. Mario Rossi" autocomplete="name">
+    <label for="inProxy">Indirizzo proxy (facoltativo)</label>
+    <input id="inProxy" type="url" placeholder="https://…workers.dev">
+    <p class="aiuto">Lascia vuoto per interrogare direttamente l'API Open Data di Normattiva. Usa il proxy solo se il test di connessione fallisce per CORS (vedi README).</p>
+    <div class="riga-pulsanti">
+      <button type="button" class="secondario" id="btnSalva">Salva</button>
+      <button type="button" class="secondario" id="btnTest">Test connessione</button>
+    </div>
+    <div id="esitoTest" class="esito-test" role="status"></div>
+  </section>
+
+  <!-- Avvio -->
+  <section id="vistaAvvio" class="vista">
+    <div class="blocco">
+      <label for="inData" class="etichetta-sezione">Data di riferimento</label>
+      <input id="inData" type="date">
+      <p class="aiuto" id="fonteData">Le norme sono confrontate con il testo vigente a questa data.</p>
+    </div>
+    <div class="blocco">
+      <span class="etichetta-sezione">Livelli di controllo</span>
+      <ul class="livelli">
+        <li><strong>1 · Esistenza</strong><span>atto, articolo, comma; date valide</span></li>
+        <li><strong>2 · Vigenza alla data</strong><span>confronto con il testo vigente oggi</span></li>
+        <li class="disattivo"><strong>3 · Pertinenza (IA)</strong><span>prevista nella versione successiva</span></li>
+      </ul>
+    </div>
+    <div class="blocco riservatezza">
+      <strong>Riservatezza</strong>
+      <span>A Normattiva vengono inviati solo gli estremi delle norme (es. «art. 10, L. 212/2000»). Il testo del documento resta su questo computer.</span>
+    </div>
+    <button type="button" class="primario grande" id="btnAvvia">Controlla documento</button>
+    <div id="avanzamento" class="avanzamento" role="status" aria-live="polite"></div>
+  </section>
+
+  <!-- Riepilogo -->
+  <section id="vistaRiepilogo" class="vista" hidden>
+    <div class="contesto">
+      <div><span>Data di riferimento</span><strong id="ctxData"></strong></div>
+      <div><span>Ultimo controllo</span><strong id="ctxOra"></strong></div>
+    </div>
+    <div id="avvisoBloccante" class="avviso-bloccante" role="alert" hidden>
+      <strong id="avvisoTitolo"></strong>
+      <span>Il documento non può essere segnato come verificato finché non viene corretta.</span>
+    </div>
+    <div class="sommario">
+      <div class="sommario-testa"><strong id="totale"></strong><span id="daRivedere"></span></div>
+      <div class="barra" id="barra" aria-hidden="true"></div>
+      <div class="conteggi" id="conteggi"></div>
+      <div class="filtro" role="group" aria-label="Filtro citazioni">
+        <button type="button" id="fRivedere" aria-pressed="true">Da rivedere</button>
+        <button type="button" id="fTutte" aria-pressed="false">Tutte</button>
+      </div>
+    </div>
+    <div class="elenco" id="elenco"></div>
+    <div class="piede">
+      <label class="spunta"><input type="checkbox" id="chkVerificato"> Ho verificato personalmente gli esiti</label>
+      <button type="button" class="primario" id="btnSegna" disabled>Segna documento come verificato</button>
+      <div class="riga-pulsanti">
+        <button type="button" class="secondario" id="btnNota">Inserisci nota</button>
+        <button type="button" class="secondario" id="btnRegistro">Inserisci registro</button>
+      </div>
+      <div class="riga-pulsanti">
+        <button type="button" class="secondario" id="btnRicontrolla">Ricontrolla</button>
+        <button type="button" class="secondario" id="btnRimuovi">Rimuovi marcature</button>
+      </div>
+      <p class="aiuto">Gli esiti sono un supporto: la verifica finale spetta al professionista (art. 13 L. 132/2025).</p>
+    </div>
+  </section>
+
+  <!-- Dettaglio -->
+  <section id="vistaDettaglio" class="vista" hidden>
+    <button type="button" class="indietro" id="btnIndietro">‹ Riepilogo</button>
+    <div id="dettaglio"></div>
+  </section>
+
+  <div id="messaggio" class="messaggio" role="status" aria-live="polite"></div>
+
+  <script src="core.js"></script>
+  <script src="taskpane.js"></script>
+</body>
+</html>
