@@ -15,6 +15,31 @@ const ORIGINE = 'https://stefanoscoz.github.io';
 const NORMATTIVA = 'https://api.normattiva.it/t/normattiva.api/bff-opendata/v1';
 const MODELLO_PREDEFINITO = 'claude-sonnet-5-5';
 const DEF = 'https://def.finanze.it/DocTribFrontend/';
+const DEF_HTTP = 'http://def.finanze.it/DocTribFrontend/';
+const INTESTAZIONI_DEF = { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (Controllo citazioni)' };
+
+// Cloudflare rifiuta i certificati che non riesce a validare (HTTP 525/526, es. catena
+// incompleta lato server). In quel caso si riprova in http, senza seguire redirect verso https.
+async function scaricaDef(percorso, traccia) {
+  let r;
+  try {
+    r = await fetch(DEF + percorso, { headers: INTESTAZIONI_DEF });
+    if (traccia) traccia.push('https: HTTP ' + r.status);
+    if (r.ok) return { ok: true, testo: await r.text(), via: 'https' };
+    if (r.status !== 525 && r.status !== 526) return { ok: false, errore: 'HTTP ' + r.status };
+  } catch (e) {
+    if (traccia) traccia.push('https: ' + String(e && e.message || e));
+  }
+  try {
+    r = await fetch(DEF_HTTP + percorso, { headers: INTESTAZIONI_DEF, redirect: 'manual' });
+    if (traccia) traccia.push('http: HTTP ' + r.status + (r.headers.get('Location') ? ' → ' + r.headers.get('Location') : ''));
+    if (r.ok) return { ok: true, testo: await r.text(), via: 'http' };
+    if (r.status >= 300 && r.status < 400) return { ok: false, errore: 'certificato di def.finanze.it non accettato da Cloudflare (526) e http reindirizzato su https' };
+    return { ok: false, errore: 'HTTP ' + r.status };
+  } catch (e) {
+    return { ok: false, errore: 'http: ' + String(e && e.message || e) };
+  }
+}
 
 // ---------------------------------------------------------------- DEF (MEF)
 // Le pagine di DEF incorporano i risultati in una variabile JavaScript con XML ("var xmlResult = '...'").
@@ -64,9 +89,9 @@ async function def(url, origin) {
   });
   if (ambito === 'G') p.set('ricercaAreaRiservata', 'false');
   const pagina = ambito === 'G' ? 'executeAdvancedGiurisprudenzaSearch.do' : 'executeAdvancedPrassiSearch.do';
-  const r = await fetch(DEF + pagina + '?' + p.toString(), { headers: { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (Controllo citazioni)' } });
-  if (!r.ok) return json({ errore: 'DEF: HTTP ' + r.status }, 502, origin);
-  const esito = analizzaRisultati(await r.text());
+  const r = await scaricaDef(pagina + '?' + p.toString());
+  if (!r.ok) return json({ errore: 'DEF: ' + r.errore }, 502, origin);
+  const esito = analizzaRisultati(r.testo);
   if (esito.errore) return json(esito, 502, origin);
   esito.ricerca = DEF + pagina + '?' + p.toString();
   return json(esito, 200, origin);
@@ -75,9 +100,9 @@ async function def(url, origin) {
 async function defMassima(url, origin) {
   const id = url.searchParams.get('id') || '';
   if (!/^\{[0-9A-F-]{36}\}$/i.test(id)) return json({ errore: 'Identificativo non valido' }, 400, origin);
-  const r = await fetch(DEF + 'getGiurisprudenzaDetail.do?id=' + encodeURIComponent(id), { headers: { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (Controllo citazioni)' } });
-  if (!r.ok) return json({ errore: 'DEF: HTTP ' + r.status }, 502, origin);
-  const d = analizzaDettaglio(await r.text());
+  const r = await scaricaDef('getGiurisprudenzaDetail.do?id=' + encodeURIComponent(id));
+  if (!r.ok) return json({ errore: 'DEF: ' + r.errore }, 502, origin);
+  const d = analizzaDettaglio(r.testo);
   return json(d, d.errore ? 502 : 200, origin);
 }
 
@@ -152,10 +177,17 @@ export default {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin') || '';
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(origin) });
+    if (request.method === 'GET' && url.pathname === '/diagnosi') {
+      // apribile anche dal browser: prova la connessione a DEF e non espone dati riservati
+      const traccia = [];
+      const r = await scaricaDef('executeAdvancedPrassiSearch.do?js_enabled=0&ambitoRicerca=P&tipoEstremi=Circolare&numero=32&annoDataEmissioneDa=2023&annoDataEmissioneA=2023&ente=Agenzia+delle+Entrate', traccia);
+      const esito = r.ok ? analizzaRisultati(r.testo) : null;
+      return new Response(JSON.stringify({ versione: '0.4.1', def: r.ok ? 'ok via ' + r.via : 'errore: ' + r.errore, risultati: esito ? esito.totale : null, tentativi: traccia }, null, 2), { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
+    }
     if (origin !== ORIGINE) return json({ errore: 'Origine non ammessa' }, 403, origin);
     if (request.method === 'GET' && url.pathname === '/def') return def(url, origin);
     if (request.method === 'GET' && url.pathname === '/def/massima') return defMassima(url, origin);
-    if (request.method === 'GET' && url.pathname === '/stato') return json({ ok: true, ia: !!env.ANTHROPIC_API_KEY, versione: '0.4' }, 200, origin);
+    if (request.method === 'GET' && url.pathname === '/stato') return json({ ok: true, ia: !!env.ANTHROPIC_API_KEY, versione: '0.4.1' }, 200, origin);
     if (request.method !== 'POST') return json({ errore: 'Metodo non ammesso' }, 405, origin);
 
     if (url.pathname === '/pertinenza') return pertinenza(request, env, origin);

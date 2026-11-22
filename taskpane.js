@@ -848,7 +848,7 @@
         righe.push('✓ Worker raggiungibile' + (st.ia ? ' · chiave API presente' : ' · chiave API assente (IA non disponibile)'));
         return chiamaDef({ genere: 'prassi', tipo: 'circolare', numero: 32, anno: 2023 }).then(function (r) {
           var ok = r && !r.errore && r.risultati && r.risultati.some(function (x) { return /n\. 32 - Agenzia delle Entrate/.test(x.estremi); });
-          righe.push(ok ? '✓ DEF: circolare 32/E/2023 trovata' : '✗ DEF: ' + ((r && r.errore) || 'risposta inattesa'));
+          righe.push(ok ? '✓ DEF: circolare 32/E/2023 trovata' : '✗ ' + String((r && r.errore) || 'DEF: risposta inattesa').replace(/^(?!DEF)/, 'DEF: ') + ' — dettagli: ' + workerUrl() + '/diagnosi');
         });
       }).catch(function () { righe.push('✗ Worker non raggiungibile: controlla l\'indirizzo e che ORIGINE nel Worker sia la tua pagina GitHub Pages.'); });
     }).then(function () {
