@@ -102,3 +102,24 @@ input[type=date], input[type=text], input[type=url] { padding: 8px 10px; border:
 
 .messaggio { position: sticky; bottom: 0; margin: 0 14px 14px; font-size: 12px; }
 .messaggio:not(:empty) { padding: 8px 10px; border-radius: 6px; background: #1B2430; color: #fff; }
+
+.schede { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--linea2); }
+.schede button { flex: 1; padding: 9px 6px; border: 0; background: transparent; font-size: 12.5px; color: #3A4452; box-shadow: inset 0 -2px 0 transparent; }
+.schede button[aria-pressed=true] { color: var(--accento); font-weight: 700; box-shadow: inset 0 -3px 0 var(--accento); }
+.suggerimento { display: flex; align-items: center; gap: 8px; margin: 10px 14px 0; padding: 8px 10px; border-radius: 8px; background: #F2F6FC; border: 1px solid #CFDCEE; font-size: 12px; }
+.suggerimento span { flex: 1; min-width: 0; word-break: break-word; }
+.suggerimento .secondario { flex: 0 0 auto; }
+.riga-campi { display: flex; gap: 8px; }
+.cons-titolo { font-size: 15px; font-weight: 700; margin: 0; }
+.cons-sotto { font-size: 12px; color: var(--tenue); margin: 2px 0 0; }
+.riepilogo { padding: 10px 12px; border-radius: 8px; background: #F4F6F9; border: 1px solid var(--linea); font-size: 12.5px; line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }
+.versioni { list-style: none; margin: 0; padding: 0; border: 1px solid var(--linea); border-radius: 8px; }
+.versioni li { padding: 8px 10px; border-bottom: 1px solid #EEF0F3; display: flex; flex-direction: column; gap: 6px; }
+.versioni li:last-child { border-bottom: 0; }
+.versioni li.attiva { background: #FFF8EB; }
+.ver-testa { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.ver-testa .badge { margin-left: auto; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--mod-f); color: var(--mod); }
+.ver-testa .badge.oggi { background: var(--ok-f); color: var(--ok); }
+.ver-azioni { display: flex; gap: 6px; }
+.ver-azioni button { padding: 4px 8px; border: 1px solid #C9D3E0; border-radius: 6px; background: #fff; font-size: 11.5px; font-weight: 600; color: #2A3340; min-height: 28px; }
+.avvertenza { font-size: 12px; line-height: 1.45; color: #8A5100; background: var(--mod-f); padding: 8px 10px; border-radius: 6px; }

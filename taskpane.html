@@ -13,12 +13,22 @@
     <span class="marchio" aria-hidden="true">§</span>
     <div class="testata-testi">
       <span class="titolo">Controllo citazioni</span>
-      <span class="sottotitolo">versione 0.1</span>
+      <span class="sottotitolo">versione 0.2</span>
     </div>
     <button type="button" class="icona" id="btnImpostazioni" aria-label="Impostazioni" aria-expanded="false">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
     </button>
   </header>
+
+  <nav class="schede" aria-label="Funzioni">
+    <button type="button" id="tabControllo" aria-pressed="true">Controllo documento</button>
+    <button type="button" id="tabConsulta" aria-pressed="false">Consulta norma</button>
+  </nav>
+
+  <div id="suggerimento" class="suggerimento" hidden>
+    <span id="suggTesto"></span>
+    <button type="button" class="secondario" id="btnSugg">Consulta</button>
+  </div>
 
   <!-- Impostazioni -->
   <section id="impostazioni" class="pannello-impostazioni" hidden>
@@ -90,6 +100,27 @@
       </div>
       <p class="aiuto">Gli esiti sono un supporto: la verifica finale spetta al professionista (art. 13 L. 132/2025).</p>
     </div>
+  </section>
+
+  <!-- Consulta norma -->
+  <section id="vistaConsulta" class="vista" hidden>
+    <div class="blocco">
+      <label for="inCit" class="etichetta-sezione">Norma</label>
+      <div class="riga-pulsanti">
+        <input id="inCit" type="text" placeholder="es. art. 19 DPR 633/72" autocomplete="off">
+        <button type="button" class="primario" id="btnCerca" style="flex:0 0 auto">Cerca</button>
+      </div>
+      <p class="aiuto">Seleziona il riferimento nel documento e scegli <strong>Consulta norma</strong> dal menu del tasto destro, oppure scrivilo qui.</p>
+    </div>
+    <div class="riga-campi">
+      <div class="blocco" style="flex:1">
+        <label for="inDataCons" class="etichetta-sezione">Vigente al</label>
+        <input id="inDataCons" type="date">
+      </div>
+    </div>
+    <label class="spunta"><input type="checkbox" id="chkSoloComma" checked> Mostra solo il comma citato</label>
+    <label class="spunta"><input type="checkbox" id="chkSegui" checked> Aggiorna quando cambio selezione</label>
+    <div id="consRisultato" role="region" aria-live="polite"></div>
   </section>
 
   <!-- Dettaglio -->

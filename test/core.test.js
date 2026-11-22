@@ -84,4 +84,16 @@ t('errore di rete -> Non verificabile', () => {
 });
 t('date API AAAAMMGG', () => { assert.strictEqual(CC.dataApi('20230101'), '2023-01-01'); assert.strictEqual(CC.dataApi('99999999'), null); });
 
+console.log('Varianti di citazione');
+function una(t) { return CC.estraiCitazioni([{ testo: t }]); }
+t('artt. 2423 e 2424 c.c. -> un riferimento con due articoli', () => { const c = una('artt. 2423 e 2424 c.c.')[0]; assert.strictEqual(c.atto.key, 'regio.decreto:262:1942'); assert.deepStrictEqual(c.altriArticoli.map(a => a.articolo), ['2424']); });
+t('art. 2423 e ss. c.c.', () => { const c = una('art. 2423 e ss. c.c.')[0]; assert.ok(c.seguenti); assert.strictEqual(c.atto.key, 'regio.decreto:262:1942'); });
+t('art. 19, D.P.R. 633/1972 (virgola, senza "del")', () => assert.strictEqual(una('art. 19, D.P.R. 633/1972')[0].atto.key, 'decreto.presidente.repubblica:633:1972'));
+t('data numerica 26/10/1972', () => assert.strictEqual(una('art. 19 D.P.R. 26/10/1972 n. 633')[0].atto.data, '1972-10-26'));
+t('"n. 472 del 1997"', () => assert.strictEqual(una('art. 13 del D.Lgs. n. 472 del 1997')[0].atto.key, 'decreto.legislativo:472:1997'));
+t('"comma 1 dell\'art. 19"', () => { const c = una('comma 1 dell’art. 19 del DPR 633/72')[0]; assert.strictEqual(c.comma, '1'); assert.ok(c.testo.startsWith('comma 1')); });
+t('atto senza articolo: "il DPR 633/72"', () => { const c = una('il DPR 633/72 prevede')[0]; assert.strictEqual(c.genere, 'atto'); });
+t('"legge di bilancio" non è una citazione', () => assert.strictEqual(una('ai sensi della legge di bilancio').length, 0));
+t('alias cc senza punti', () => assert.strictEqual(una('art. 2423 cc')[0].atto.key, 'regio.decreto:262:1942'));
+
 console.log('\n' + ok + ' test superati' + (process.exitCode ? ' — CI SONO ERRORI' : ''));

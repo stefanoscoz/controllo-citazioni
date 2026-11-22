@@ -29,7 +29,11 @@
   function leggiImpostazione(k) { try { return localStorage.getItem('cc.' + k) || ''; } catch (e) { return ''; } }
   function scriviImpostazione(k, v) { try { localStorage.setItem('cc.' + k, v); } catch (e) { /* storage non disponibile */ } }
   function mostra(vista) {
-    ['vistaAvvio', 'vistaRiepilogo', 'vistaDettaglio'].forEach(function (id) { $(id).hidden = id !== vista; });
+    ['vistaAvvio', 'vistaRiepilogo', 'vistaDettaglio', 'vistaConsulta'].forEach(function (id) { $(id).hidden = id !== vista; });
+    var consulta = vista === 'vistaConsulta';
+    $('tabConsulta').setAttribute('aria-pressed', String(consulta));
+    $('tabControllo').setAttribute('aria-pressed', String(!consulta));
+    if (consulta) $('suggerimento').hidden = true;
   }
 
   // ------------------------------------------------------------- Normattiva
@@ -83,6 +87,10 @@
   }
 
   function verificaCitazione(c) {
+    if (c.altriArticoli && c.altriArticoli.length) return verificaMultipla(c);
+    if (c.genere === 'atto' && c.atto && !c.atto.errore) {
+      return chiamaNormattiva(c.atto.urn + '!vig=' + stato.dataRif).then(function (r) { return CC.valutaAtto(c, r); });
+    }
     var formale = CC.esitoFormale(c);
     if (formale) {
       if (c.genere === 'norma' && c.atto && !c.atto.errore) formale.link = CC.linkNormattiva(CC.urnArticolo(c), stato.dataRif);
@@ -96,6 +104,24 @@
         var v = CC.valutaNorma(c, rif, oggi, stato.dataRif);
         if (rif.senzaData) v.motivo += ' Nota: versione alla data non disponibile, confronto sulle date di vigenza.';
         return v;
+      });
+    });
+  }
+
+  // "artt. 2423 e 2424 c.c.": verifica ogni articolo e riporta l'esito peggiore
+  function verificaMultipla(c) {
+    var tutti = [{ articolo: c.articolo, articoloTesto: c.articoloTesto }].concat(c.altriArticoli);
+    var esiti = [];
+    return tutti.reduce(function (p, a) {
+      return p.then(function () {
+        var copia = Object.assign({}, c, { articolo: a.articolo, articoloTesto: a.articoloTesto, altriArticoli: null });
+        return verificaCitazione(copia).then(function (v) { esiti.push({ a: a, v: v }); });
+      });
+    }, Promise.resolve()).then(function () {
+      var peggiore = esiti.slice().sort(function (x, y) { return CC.ESITI[x.v.esito].gravita - CC.ESITI[y.v.esito].gravita; })[0].v;
+      return Object.assign({}, peggiore, {
+        motivo: esiti.map(function (e) { return 'art. ' + e.a.articoloTesto + ': ' + CC.ESITI[e.v.esito].etichetta + ' — ' + e.v.motivo; }).join(' | '),
+        bloccante: esiti.some(function (e) { return e.v.bloccante; })
       });
     });
   }
@@ -195,7 +221,7 @@
     var n = conteggio();
     var esiti = [n.ok + ' verificate', n.mod + ' modificate', n.dub + ' con pertinenza dubbia', n.nv + ' non verificabili', n.ko + ' non trovate'].join(', ');
     var riga1 = 'Nota di verifica — citazioni controllate il ' + formatoData(oggiISO()) + ' alle ' + stato.ora +
-      ' con Controllo citazioni 0.1; data di riferimento ' + formatoData(stato.dataRif) + '. Esiti: ' + esiti + '.';
+      ' con Controllo citazioni 0.2; data di riferimento ' + formatoData(stato.dataRif) + '. Esiti: ' + esiti + '.';
     var nome = leggiImpostazione('nome') || '[professionista]';
     var riga2 = validata
       ? 'Verifica del professionista: eseguita da ' + nome + ' il ' + formatoData(oggiISO()) + '.'
@@ -378,6 +404,216 @@
     $('btnSegna').disabled = bloccanti || !$('chkVerificato').checked;
   }
 
+
+  // ------------------------------------------------------- consulta norma
+  var consulta = { ultima: null, versioni: null, cit: null, timerSel: null, inCorso: false };
+
+  function addGiorni(iso, n) {
+    var d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Legge la selezione e, se possibile, la citazione completa che la contiene nel paragrafo
+  function leggiSelezione() {
+    return Word.run(function (ctx) {
+      var sel = ctx.document.getSelection();
+      sel.load('text');
+      var par = sel.paragraphs.getFirst();
+      par.load('text');
+      return ctx.sync().then(function () {
+        var st = (sel.text || '').trim();
+        if (!st || st.length > 400) return null;
+        var pt = par.text || '';
+        var idx = pt.indexOf(st);
+        if (idx >= 0) {
+          var cits = CC.estraiCitazioni([{ testo: pt }]).filter(function (c) { return c.genere === 'norma' || c.genere === 'atto'; });
+          var sovr = cits.filter(function (c) { return c.inizio < idx + st.length && c.fine > idx; });
+          if (sovr.length) return sovr[0].testo;
+        }
+        var proprie = CC.estraiCitazioni([{ testo: st }]).filter(function (c) { return c.genere === 'norma' || c.genere === 'atto'; });
+        return proprie.length ? proprie[0].testo : st;
+      });
+    });
+  }
+
+  function chiamataAllaData(urn, data) { return chiamaNormattiva(urn + '!vig=' + data); }
+
+  // Ricostruisce le versioni dell'articolo seguendo le date di inizio/fine vigenza restituite da Normattiva
+  function versioniArticolo(urnArt, data) {
+    var MAX = 10;
+    return chiamataAllaData(urnArt, data).then(function (v0) {
+      if (v0.errore || !v0.trovato) return { errore: v0.errore, trovato: false, multiplo: v0.multiplo };
+      var elenco = [v0];
+      var affidabile = !(v0.inizioVig && v0.inizioVig > data);
+      function avanti(cur) {
+        if (!cur.fineVig || elenco.length >= MAX) return Promise.resolve();
+        return chiamataAllaData(urnArt, addGiorni(cur.fineVig, 1)).then(function (nx) {
+          if (!nx.trovato || nx.inizioVig === cur.inizioVig) return;
+          elenco.push(nx); return avanti(nx);
+        });
+      }
+      function indietro(cur) {
+        if (!cur.inizioVig || elenco.length >= MAX) return Promise.resolve();
+        var d = addGiorni(cur.inizioVig, -1);
+        return chiamataAllaData(urnArt, d).then(function (pv) {
+          if (!pv.trovato || pv.inizioVig === cur.inizioVig || (pv.inizioVig && pv.inizioVig > d)) return;
+          elenco.unshift(pv); return indietro(pv);
+        });
+      }
+      return avanti(v0).then(function () { return indietro(v0); }).then(function () {
+        return { trovato: true, versioni: elenco, attiva: elenco.indexOf(v0), affidabile: affidabile, troncato: elenco.length >= MAX };
+      });
+    });
+  }
+
+  function parteDaMostrare(html, c) {
+    var testo = CC.testoDaHtml(html);
+    if ($('chkSoloComma').checked && c.comma) {
+      var cm = CC.estraiComma(testo, c.comma);
+      if (cm) return { testo: cm, comma: true };
+    }
+    return { testo: testo, comma: false };
+  }
+
+  function riepilogoTesto(c, r, data) {
+    if (c.genere === 'atto') return [c.testo + (c.atto.nome ? ' (' + c.atto.nome + ')' : ''), 'Atto presente in Normattiva. Per la multivigenza indica un articolo (es. «art. 19 ' + c.testo + '»).', 'Fonte: Normattiva (IPZS), consultata il ' + formatoData(oggiISO()) + '; testo non ufficiale.'];
+    var att = r.versioni[r.attiva];
+    var ultima = r.versioni[r.versioni.length - 1];
+    var righe = [];
+    righe.push(c.testo + (c.atto && c.atto.nome ? ' (' + c.atto.nome + ')' : ''));
+    righe.push('Versione applicabile al ' + formatoData(data) + ': in vigore ' +
+      (att.inizioVig ? 'dal ' + formatoData(att.inizioVig) : '') + (att.fineVig ? ' al ' + formatoData(att.fineVig) : ' ad oggi') + '.');
+    righe.push('Versioni ricostruite: ' + r.versioni.length + (r.troncato ? '+' : '') +
+      (r.versioni[0].inizioVig ? ', la prima dal ' + formatoData(r.versioni[0].inizioVig) : '') + '.');
+    if (r.versioni.length > 1 && ultima.inizioVig) righe.push('Ultima modifica in vigore dal ' + formatoData(ultima.inizioVig) + (r.attiva === r.versioni.length - 1 ? ' (è la versione applicabile).' : ': diversa dalla versione applicabile.'));
+    righe.push('Fonte: Normattiva (IPZS), consultata il ' + formatoData(oggiISO()) + '; testo non ufficiale.');
+    return righe;
+  }
+
+  function avviaConsulta(testoCit) {
+    if (consulta.inCorso) return;
+    var data = $('inDataCons').value || oggiISO();
+    $('inCit').value = testoCit;
+    var out = $('consRisultato');
+    var cits = CC.estraiCitazioni([{ testo: testoCit }]).filter(function (c) { return c.genere === 'norma' || c.genere === 'atto'; });
+    var c = cits[0];
+    if (!c || !c.atto || c.atto.errore) {
+      out.innerHTML = '<p class="avvertenza">' + esc(c && c.atto && c.atto.errore ? c.atto.errore + '.' : 'Non riconosco la norma. Scrivi gli estremi completi, es. «art. 19 DPR 633/72» o «art. 2423 c.c.». Se il riferimento è solo «art. 5», aggiungi l\'atto.') + '</p>';
+      return;
+    }
+    consulta.inCorso = true; consulta.cit = c; consulta.ultima = testoCit;
+    out.innerHTML = '<p class="aiuto">Ricerca su Normattiva e ricostruzione delle versioni…</p>';
+    var urn = c.genere === 'atto' ? c.atto.urn : CC.urnArticolo(c);
+    (c.genere === 'atto' ? chiamataAllaData(urn, data).then(function (r) { return r.trovato ? { trovato: true, versioni: [r], attiva: 0, affidabile: true } : r; }) : versioniArticolo(urn, data))
+      .then(function (r) { consulta.versioni = r; renderConsulta(c, r, data, urn); })
+      .catch(errore)
+      .then(function () { consulta.inCorso = false; });
+  }
+
+  function renderConsulta(c, r, data, urn) {
+    var out = $('consRisultato');
+    var link = CC.linkNormattiva(urn, data);
+    if (r.errore) { out.innerHTML = '<p class="avvertenza">Normattiva non raggiungibile (' + esc(r.errore) + ').</p><a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>'; return; }
+    if (r.multiplo) { out.innerHTML = '<p class="avvertenza">Più atti corrispondono: indica la data completa dell\'atto.</p>'; return; }
+    if (!r.trovato) { out.innerHTML = '<p class="avvertenza">Normattiva non restituisce l\'articolo indicato.</p><a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>'; return; }
+
+    var att = r.versioni[r.attiva];
+    var artRest = CC.articoloRestituito(CC.testoDaHtml(att.html));
+    var h = '<div style="display:flex;flex-direction:column;gap:12px">';
+    h += '<div><p class="cons-titolo">' + esc(c.testo) + '</p><p class="cons-sotto">' + esc((c.atto.nome || c.atto.urn)) + '</p></div>';
+    if (c.genere === 'norma' && artRest && artRest !== c.articolo) {
+      h += '<p class="avvertenza">Attenzione: Normattiva restituisce l\'art. ' + esc(artRest) + ' e non l\'art. ' + esc(c.articoloTesto) + '. Il riferimento potrebbe essere errato.</p>';
+    }
+    if (!r.affidabile) {
+      h += '<p class="avvertenza">La versione restituita è in vigore dal ' + esc(formatoData(att.inizioVig)) + ', dopo la data richiesta: l\'articolo non esisteva ancora oppure la versione storica non è disponibile.</p>';
+    }
+    var righe = riepilogoTesto(c, r, data);
+    h += '<div class="riepilogo"><strong>Riepilogo multivigenza</strong><span>' + righe.slice(1, -1).map(esc).join('<br>') + '</span>' +
+      '<div class="riga-pulsanti"><button type="button" class="secondario" id="btnCommRiep">Inserisci come commento</button>' +
+      '<button type="button" class="secondario" id="btnCopiaRiep">Copia</button></div></div>';
+    if (r.versioni.length > 1) {
+      h += '<div class="det-blocco"><h3>Versioni dell\'articolo</h3><ul class="versioni">' + r.versioni.map(function (v, i) {
+        var periodo = (v.inizioVig ? 'dal ' + formatoData(v.inizioVig) : 'origine') + (v.fineVig ? ' al ' + formatoData(v.fineVig) : ' → oggi');
+        return '<li class="' + (i === r.attiva ? 'attiva' : '') + '"><div class="ver-testa"><strong>' + (i + 1) + '</strong><span>' + esc(periodo) + '</span>' +
+          (i === r.attiva ? '<span class="badge">al ' + esc(formatoData(data)) + '</span>' : (!v.fineVig ? '<span class="badge oggi">vigente</span>' : '')) + '</div>' +
+          '<div class="ver-azioni"><button type="button" data-ver="' + i + '">Testo</button>' + (i > 0 ? '<button type="button" data-diff="' + i + '">Differenze con la ' + i + '</button>' : '') + '</div></li>';
+      }).join('') + '</ul></div>';
+    }
+    var parte = parteDaMostrare(att.html, c);
+    h += '<div class="det-blocco"><h3 id="titTesto">Testo vigente al ' + esc(formatoData(data)) + (parte.comma ? ' · comma ' + esc(c.commaTesto) : '') + '</h3><div class="estratto" id="testoVer">' + esc(parte.testo.slice(0, 6000)) + '</div></div>';
+    h += '<a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>';
+    h += '<p class="aiuto">Le versioni sono ricostruite dalle date di vigenza fornite da Normattiva (max 10). Fonte: Normattiva (IPZS), testo non ufficiale.</p></div>';
+    out.innerHTML = h;
+  }
+
+  function mostraVersione(i, diff) {
+    var r = consulta.versioni, c = consulta.cit;
+    if (!r || !r.versioni[i]) return;
+    var v = r.versioni[i];
+    var periodo = (v.inizioVig ? 'dal ' + formatoData(v.inizioVig) : '') + (v.fineVig ? ' al ' + formatoData(v.fineVig) : ' → oggi');
+    if (!diff) {
+      var p = parteDaMostrare(v.html, c);
+      $('titTesto').textContent = 'Versione ' + (i + 1) + ' (' + periodo + ')' + (p.comma ? ' · comma ' + c.commaTesto : '');
+      $('testoVer').textContent = p.testo.slice(0, 6000);
+    } else {
+      var a = parteDaMostrare(r.versioni[i - 1].html, c).testo, b = parteDaMostrare(v.html, c).testo;
+      var seg = CC.confrontaParole(a, b);
+      $('titTesto').textContent = 'Differenze: versione ' + i + ' → versione ' + (i + 1) + ' (' + periodo + ')';
+      $('testoVer').innerHTML = seg ? renderConfronto(seg) : esc('Testo troppo lungo per il confronto: attiva «Mostra solo il comma citato».');
+    }
+    var tv = $('testoVer'); if (tv.scrollIntoView) tv.scrollIntoView({ block: 'nearest' });
+  }
+
+  function inserisciCommentoRiepilogo() {
+    var r = consulta.versioni, c = consulta.cit;
+    if (!r || !r.trovato) return;
+    if (!stato.commenti) { messaggio('Questa versione di Word non consente di inserire commenti dal plugin.'); return; }
+    var testo = PREFISSO_COMMENTO + riepilogoTesto(c, r, $('inDataCons').value || oggiISO()).join(' ');
+    Word.run(function (ctx) {
+      var sel = ctx.document.getSelection();
+      sel.load('text');
+      return ctx.sync().then(function () {
+        if (!(sel.text || '').trim()) { messaggio('Seleziona nel documento il riferimento a cui collegare il commento.'); return; }
+        sel.insertComment(testo);
+        return ctx.sync().then(function () { messaggio('Riepilogo inserito come commento.'); });
+      });
+    }).catch(errore);
+  }
+
+  function copiaRiepilogo() {
+    var r = consulta.versioni, c = consulta.cit;
+    if (!r || !r.trovato) return;
+    var testo = riepilogoTesto(c, r, $('inDataCons').value || oggiISO()).join('\n');
+    var ta = document.createElement('textarea');
+    ta.value = testo; ta.setAttribute('readonly', ''); ta.style.position = 'absolute'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    messaggio(ok ? 'Riepilogo copiato.' : 'Copia non riuscita: seleziona il testo manualmente.');
+  }
+
+  function consultaDaSelezione(forza) {
+    return leggiSelezione().then(function (t) {
+      if (!t) { if (forza) messaggio('Seleziona nel documento il riferimento alla norma.'); return; }
+      var riconosciuta = CC.estraiCitazioni([{ testo: t }]).some(function (c) { return (c.genere === 'norma' || c.genere === 'atto') && c.atto && !c.atto.errore; });
+      if (!$('vistaConsulta').hidden) {
+        if (forza || (riconosciuta && t !== consulta.ultima)) avviaConsulta(t);
+      } else if (riconosciuta) {
+        $('suggTesto').textContent = 'Selezione: «' + t.slice(0, 80) + '»';
+        $('btnSugg').setAttribute('data-cit', t);
+        $('suggerimento').hidden = false;
+      }
+    }).catch(function () { /* selezione non leggibile */ });
+  }
+
+  function suCambioSelezione() {
+    if (consulta.timerSel) clearTimeout(consulta.timerSel);
+    consulta.timerSel = setTimeout(function () {
+      if (!$('vistaConsulta').hidden && !$('chkSegui').checked) return;
+      consultaDaSelezione(false);
+    }, 700);
+  }
+
   // ------------------------------------------------------------- test API
   function testConnessione() {
     var out = $('esitoTest');
@@ -401,6 +637,15 @@
         });
       });
     }, Promise.resolve()).then(function () {
+      // Le versioni storiche sono disponibili? (la versione restituita deve coprire la data richiesta)
+      var urn = 'urn:nir:stato:legge:2014-12-23;190~art1', d = '2022-12-31';
+      return chiamaNormattiva(urn + '!vig=' + d).then(function (r) {
+        if (!r.trovato) { righe.push('? Versioni storiche: nessun testo per la prova.'); return; }
+        var copre = (!r.inizioVig || r.inizioVig <= d) && (!r.fineVig || r.fineVig >= d);
+        righe.push((copre ? '✓ Versioni storiche disponibili' : '⚠ Versioni storiche: la data sembra ignorata') +
+          ' (L. 190/2014 art. 1 al 31/12/2022 → in vigore ' + (r.inizioVig ? 'dal ' + formatoData(r.inizioVig) : '?') + (r.fineVig ? ' al ' + formatoData(r.fineVig) : ' ad oggi') + ')');
+      });
+    }).then(function () {
       out.textContent = righe.join('\n') + '\nServizio: ' + baseApi();
     });
   }
@@ -467,5 +712,27 @@
       messaggio('Impostazioni salvate.');
     });
     $('btnTest').addEventListener('click', function () { testConnessione().catch(errore); });
+
+    // Consulta norma
+    $('inDataCons').value = oggiISO();
+    $('tabControllo').addEventListener('click', function () { mostra(stato.citazioni.length && stato.citazioni[0].verifica ? 'vistaRiepilogo' : 'vistaAvvio'); });
+    $('tabConsulta').addEventListener('click', function () { mostra('vistaConsulta'); consultaDaSelezione(false); });
+    $('btnCerca').addEventListener('click', function () { if ($('inCit').value.trim()) { consulta.ultima = null; avviaConsulta($('inCit').value.trim()); } });
+    $('inCit').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnCerca').click(); });
+    $('inDataCons').addEventListener('change', function () { if (consulta.cit) { stato.cache = stato.cache || {}; avviaConsulta($('inCit').value.trim()); } });
+    $('chkSoloComma').addEventListener('change', function () { if (consulta.versioni && consulta.versioni.trovato) renderConsulta(consulta.cit, consulta.versioni, $('inDataCons').value || oggiISO(), consulta.cit.genere === 'atto' ? consulta.cit.atto.urn : CC.urnArticolo(consulta.cit)); });
+    $('btnSugg').addEventListener('click', function () { mostra('vistaConsulta'); avviaConsulta($('btnSugg').getAttribute('data-cit')); });
+    $('consRisultato').addEventListener('click', function (ev) {
+      var b = ev.target.closest ? ev.target.closest('button') : null;
+      if (!b) return;
+      if (b.id === 'btnCommRiep') inserisciCommentoRiepilogo();
+      else if (b.id === 'btnCopiaRiep') copiaRiepilogo();
+      else if (b.hasAttribute('data-ver')) mostraVersione(parseInt(b.getAttribute('data-ver'), 10), false);
+      else if (b.hasAttribute('data-diff')) mostraVersione(parseInt(b.getAttribute('data-diff'), 10), true);
+    });
+    try {
+      Office.context.document.addHandlerAsync(Office.EventType.DocumentSelectionChanged, suCambioSelezione);
+    } catch (e) { /* evento non disponibile */ }
+    if (/[?&]vista=consulta/.test(window.location.search)) { mostra('vistaConsulta'); consultaDaSelezione(true); }
   });
 })();

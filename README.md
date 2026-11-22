@@ -1,4 +1,4 @@
-# Controllo citazioni — componente aggiuntivo per Word (v0.1)
+# Controllo citazioni — componente aggiuntivo per Word (v0.2)
 
 Pannello laterale per Word che legge il documento, trova le citazioni e le controlla:
 
@@ -9,6 +9,17 @@ Pannello laterale per Word che legge il documento, trova le citazioni e le contr
 | 3 · Pertinenza (IA) | Non ancora attiva: richiede un server per custodire la chiave API (prevista nella v0.2). |
 
 Sul documento il plugin aggiunge **riquadri colorati** attorno alle citazioni (content control) e **commenti** con l'esito. Può inserire una **nota di verifica** e un **registro** in fondo al documento. Il testo del documento non viene mai riscritto. Il pulsante "Rimuovi marcature" toglie tutto.
+
+**Novità v0.2**
+- **Consulta norma**: seleziona un riferimento nel testo (es. «art. 19 del DPR 633/72»), tasto destro → **Consulta norma**. Il pannello si apre con:
+  - il testo vigente alla data scelta (solo il comma citato, oppure l'articolo intero);
+  - il **riepilogo multivigenza**: le versioni dell'articolo ricostruite dalle date di vigenza di Normattiva (fino a 10), la versione applicabile alla data, le differenze tra due versioni consecutive;
+  - i pulsanti **Inserisci come commento** (aggancia il riepilogo alla selezione) e **Copia**.
+  Con il pannello aperto, se cambi selezione la consultazione si aggiorna (casella «Aggiorna quando cambio selezione»).
+- **Riconoscimento ampliato**: «artt. 2423 e 2424 c.c.», «art. 2423 e ss. c.c.», «cc» senza punti, «art. 19, D.P.R. 633/1972», date numeriche («26/10/1972»), «n. 472 del 1997», «comma 1 dell'art. 19», e gli atti citati senza articolo («il DPR 633/72», verificati solo come esistenza).
+- **Test connessione** più completo: verifica anche se Normattiva restituisce davvero le versioni storiche.
+
+Il menu del tasto destro compare solo sul **testo semplice**: non compare su tabelle, elenchi puntati o caselle di testo. Lì usa la scheda «Consulta norma» del pannello.
 
 Funziona senza server: è una pagina statica pubblicata su **GitHub Pages**, come il plugin Excel.
 
@@ -73,7 +84,9 @@ Il browser di Word blocca le chiamate verso siti che non autorizzano esplicitame
 
 Il proxy inoltra solo le richieste di dettaglio atto e non conserva dati.
 
-## 7. Aggiornare il plugin
+## 7. Aggiornare il plugin (anche dalla v0.1 alla v0.2)
+Quando cambia il **manifest** (come nella v0.2, che aggiunge il menu del tasto destro): chiudi Word, sostituisci il `manifest.xml` nella cartella `wef`, svuota la cache (vedi sotto) e riapri Word.
+
 Modifica i file e ricaricali su GitHub. Word per Mac tiene una copia in memoria: se non vedi le modifiche, chiudi Word e svuota la cache cancellando il contenuto di:
 `~/Library/Containers/com.Microsoft.OsfWebHost/Data/`
 (il manifest nella cartella `wef` lascialo). Se cambi il manifest, ricopialo in `wef`.

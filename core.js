@@ -47,7 +47,7 @@
     { re: /statuto (?:dei diritti )?del contribuente/iy, key: 'legge:212:2000' },
     { re: /decreto iva/iy, key: 'decreto.presidente.repubblica:633:1972' },
     { re: /codice della crisi(?: d['’]impresa e dell['’]insolvenza)?|c\.?c\.?i\.?i\.?(?![a-z])/iy, key: 'decreto.legislativo:14:2019' },
-    { re: /c\.\s?c\.|cod\.\s?civ\.|codice civile/iy, key: 'regio.decreto:262:1942' }
+    { re: /c\.\s?c\.|cod\.\s?civ\.|codice civile|cc(?![a-zà-ù])/iy, key: 'regio.decreto:262:1942' }
   ];
 
   var MESI = { gennaio: 1, febbraio: 2, marzo: 3, aprile: 4, maggio: 5, giugno: 6, luglio: 7, agosto: 8, settembre: 9, ottobre: 10, novembre: 11, dicembre: 12 };
@@ -79,11 +79,17 @@
   // ---------------------------------------------------------------------------
   var RE_COMMA = new RegExp('\\s*,?\\s*(?:comma|co\\.|c\\.)\\s*(\\d+(?:[\\s-]?' + LATINI + ')?)', 'iy');
   var RE_LETT = new RegExp('\\s*,?\\s*lett(?:era|\\.)?\\s*([a-z](?:[\\s-]?' + LATINI + ')?)\\)?', 'iy');
-  var RE_CONN = /\s*,?\s*(?:del(?:la|lo|l['’]|\s)|dell['’]|d\.|ex\s)?\s*/iy;
-  var RE_TIPO = new RegExp(
-    '(d\\.\\s?lgs\\.?|decreto legislativo|d\\.\\s?l\\.|decreto[- ]legge|d\\.\\s?p\\.\\s?r\\.|dpr|decreto del presidente della repubblica|r\\.\\s?d\\.|regio decreto|legge|l\\.)' +
-    '\\s*(?:(\\d{1,2})\\s+' + MESI_RE + '\\s+(\\d{4})\\s*,?\\s*)?' +
-    '(?:n\\.?\\s*)?(\\d+)(?:\\s*\\/\\s*(\\d{4}|\\d{2}))?', 'iy');
+  // connettori tra articolo e atto: "del", "della", "dell'", ", ", "ex", "di cui al"
+  var RE_CONN = /\s*,?\s*(?:di cui al(?:l['’]|la|lo)?\s*|del(?:la|lo|l['’]|\s)|dell['’]|ex\s)?\s*/iy;
+  var TIPI_ATTO = 'd\\.\\s?lgs\\.?|decreto legislativo|d\\.\\s?l\\.|decreto[- ]legge|d\\.\\s?p\\.\\s?r\\.|dpr|decreto del presidente della repubblica|r\\.\\s?d\\.|regio decreto|legge|l\\.';
+  var RE_TIPO_TOKEN = new RegExp('(' + TIPI_ATTO + ')', 'iy');
+  var RE_DATA_TESTO = new RegExp('\\s*,?\\s*(?:del\\s+)?(\\d{1,2})(?:°|º)?\\s+' + MESI_RE + '\\s+(\\d{4})\\s*,?', 'iy');
+  var RE_DATA_NUM = /\s*,?\s*(?:del\s+)?(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\s*,?/iy;
+  var RE_NUM = /\s*(?:(?:n(?:r|um)?\.?|numero)\s*)?(\d+)(?![\d]|[.,]\d)/iy;
+  var RE_ANNO = /(?:\s*\/\s*(\d{4}|\d{2})(?!\d)|\s*,?\s*del(?:l['’]\s*anno|\s+anno)?\s+(\d{4})(?!\d))/iy;
+  var RE_SS = /\s*,?\s*(?:e\s+)?(?:ss\.|segg\.|seguenti)/iy;
+  var RE_ALTRI = new RegExp('\\s*(?:,|e|ed)\\s*(\\d+(?:[\\s-]?' + LATINI + ')?)(?![\\d\\/]|\\.\\d)', 'iy');
+  var RE_COMMA_PRIMA = new RegExp('comma\\s+(\\d+(?:[\\s-]?' + LATINI + ')?)\\s*,?\\s*(?:dell[\'’]\\s*|del\\s+)$', 'i');
   var RE_RELATIVO = /(?:medesim[ao]|stess[ao]|citat[ao]|predett[ao])\s+(?:legge|decreto(?:\s+legislativo)?|d\.\s?lgs\.?|testo unico)/iy;
 
   function tipoUrn(t) {
@@ -109,21 +115,46 @@
     }
     m = provaRegex(RE_RELATIVO, testo, pos);
     if (m) return { atto: ultimoAtto || null, fine: pos + m[0].length, relativo: true };
-    m = provaRegex(RE_TIPO, testo, pos);
-    if (m) {
-      var tipo = tipoUrn(m[1]);
-      var numero = parseInt(m[5], 10);
-      var anno = m[4] ? parseInt(m[4], 10) : (m[6] ? annoQuattroCifre(m[6]) : null);
-      var data = null;
-      if (m[2] && m[3] && m[4]) {
-        var g = parseInt(m[2], 10), mm = MESI[m[3].toLowerCase()];
-        if (!dataValida(g, mm, anno)) return { atto: { errore: 'Data dell\'atto inesistente' }, fine: pos + m[0].length };
-        data = anno + '-' + pad(mm) + '-' + pad(g);
-      }
-      if (!anno) return null; // "L. n. 3" senza anno: non affidabile
-      return { atto: costruisciAtto(tipo + ':' + numero + ':' + anno, data, tipo, numero, anno), fine: pos + m[0].length };
+    return leggiAttoTipizzato(testo, pos);
+  }
+
+  // "D.P.R. 26 ottobre 1972, n. 633" | "DPR 633/72" | "D.Lgs. n. 472 del 1997" | "D.P.R. 26/10/1972 n. 633"
+  // | "D.P.R. n. 633 del 26 ottobre 1972" | "legge n. 190/2014"
+  function leggiAttoTipizzato(testo, pos) {
+    var m = provaRegex(RE_TIPO_TOKEN, testo, pos);
+    if (!m) return null;
+    var tipo = tipoUrn(m[1]);
+    var p = pos + m[0].length;
+    var g = null, mm = null, anno = null, numero = null;
+
+    function leggiData(at) {
+      var d = provaRegex(RE_DATA_TESTO, testo, at);
+      if (d) return { g: parseInt(d[1], 10), m: MESI[d[2].toLowerCase()], a: parseInt(d[3], 10), fine: at + d[0].length };
+      d = provaRegex(RE_DATA_NUM, testo, at);
+      if (d) return { g: parseInt(d[1], 10), m: parseInt(d[2], 10), a: parseInt(d[3], 10), fine: at + d[0].length };
+      return null;
     }
-    return null;
+
+    var d1 = leggiData(p);
+    if (d1) { g = d1.g; mm = d1.m; anno = d1.a; p = d1.fine; }
+    var n = provaRegex(RE_NUM, testo, p);
+    if (!n) return null;                       // "legge di bilancio": nessun numero
+    numero = parseInt(n[1], 10); p += n[0].length;
+    if (!d1) {
+      var a = provaRegex(RE_ANNO, testo, p);
+      if (a) { anno = a[1] ? annoQuattroCifre(a[1]) : parseInt(a[2], 10); p += a[0].length; }
+      else {
+        var d2 = leggiData(p);
+        if (d2) { g = d2.g; mm = d2.m; anno = d2.a; p = d2.fine; }
+      }
+    }
+    if (!anno) return null;                    // "L. n. 3" senza anno: non affidabile
+    var data = null;
+    if (g && mm) {
+      if (!dataValida(g, mm, anno)) return { atto: { errore: 'Data dell\'atto inesistente' }, fine: p };
+      data = anno + '-' + pad(mm) + '-' + pad(g);
+    }
+    return { atto: costruisciAtto(tipo + ':' + numero + ':' + anno, data, tipo, numero, anno), fine: p };
   }
 
   function costruisciAtto(key, dataTesto, tipo, numero, anno) {
@@ -143,7 +174,8 @@
   // ---------------------------------------------------------------------------
   // 3. Estrazione
   // ---------------------------------------------------------------------------
-  var RE_ART = new RegExp('\\bart(?:icolo|t)?\\.?\\s*(\\d+(?:[\\s-]?' + LATINI + ')?)(?![\\d/])', 'gi');
+  var RE_ART = new RegExp('\\b(art(?:icol[oi]|t)?)\\.?\\s*(\\d+(?:[\\s-]?' + LATINI + ')?)(?![\\d/])', 'gi');
+  var RE_ATTO_SOLO = new RegExp('(?:^|[^a-zà-ù.])(' + TIPI_ATTO + ')', 'gi');
   var RE_CASS = new RegExp(
     '\\bCass(?:azione)?\\.?(?:\\s*(?:civ|pen|trib)\\.?)?\\s*,?' +
     '(?:\\s*(?:sez(?:ione)?\\.?|ss\\.?\\s*uu\\.?|sezioni unite)\\s*(?:un(?:ite)?\\.?|[IVX]+|\\d+|trib(?:utaria)?\\.?|lav(?:oro)?\\.?)?\\s*,?)?' +
@@ -174,11 +206,26 @@
       while ((m = RE_ART.exec(testo)) !== null) {
         var inizio = m.index;
         var pos = m.index + m[0].length;
-        var c = { genere: 'norma', articolo: normNumero(m[1]), articoloTesto: m[1] };
-        var mc = provaRegex(RE_COMMA, testo, pos);
-        if (mc) { c.comma = normNumero(mc[1]); c.commaTesto = mc[1]; pos += mc[0].length; }
+        var plurale = /^(artt|articoli)$/i.test(m[1]);
+        var c = { genere: 'norma', articolo: normNumero(m[2]), articoloTesto: m[2] };
+        // "comma 1 dell'art. 19"
+        var prima = RE_COMMA_PRIMA.exec(testo.slice(Math.max(0, inizio - 40), inizio));
+        if (prima) { c.comma = normNumero(prima[1]); c.commaTesto = prima[1]; inizio = inizio - prima[0].length; }
+        // "artt. 2423, 2424 e 2425"
+        if (plurale) {
+          var ma; c.altriArticoli = [];
+          while ((ma = provaRegex(RE_ALTRI, testo, pos))) { c.altriArticoli.push({ articolo: normNumero(ma[1]), articoloTesto: ma[1] }); pos += ma[0].length; }
+          if (!c.altriArticoli.length) delete c.altriArticoli;
+        }
+        var mss = provaRegex(RE_SS, testo, pos);
+        if (mss) { c.seguenti = true; pos += mss[0].length; }
+        if (!c.comma) {
+          var mc = provaRegex(RE_COMMA, testo, pos);
+          if (mc) { c.comma = normNumero(mc[1]); c.commaTesto = mc[1]; pos += mc[0].length; }
+        }
         var ml = provaRegex(RE_LETT, testo, pos);
         if (ml) { c.lettera = ml[1].toLowerCase().replace(/[\s-]+/g, ''); pos += ml[0].length; }
+        if (!mss) { mss = provaRegex(RE_SS, testo, pos); if (mss) { c.seguenti = true; pos += mss[0].length; } }
         var mconn = provaRegex(RE_CONN, testo, pos);
         var posAtto = mconn ? pos + mconn[0].length : pos;
         var la = leggiAtto(testo, posAtto, ultimoAtto);
@@ -193,6 +240,20 @@
         c.testo = porzione; c.inizio = inizio; c.fine = inizio + porzione.length;
         trovate.push(c);
         RE_ART.lastIndex = Math.max(pos, RE_ART.lastIndex);
+      }
+
+      // 3a-bis. Atti citati senza articolo ("il DPR 633/72", "la L. 190/2014")
+      RE_ATTO_SOLO.lastIndex = 0;
+      while ((m = RE_ATTO_SOLO.exec(testo)) !== null) {
+        var st = m.index + m[0].length - m[1].length;
+        var dentro = trovate.some(function (t) { return st >= t.inizio && st < t.fine; });
+        if (dentro) continue;
+        var lt = leggiAttoTipizzato(testo, st);
+        if (!lt || !lt.atto) continue;
+        var ta = testo.slice(st, lt.fine).replace(/[\s,;:]+$/, '');
+        trovate.push({ genere: 'atto', atto: lt.atto, testo: ta, inizio: st, fine: st + ta.length });
+        if (!lt.atto.errore) ultimoAtto = lt.atto;
+        RE_ATTO_SOLO.lastIndex = Math.max(lt.fine, RE_ATTO_SOLO.lastIndex);
       }
 
       // 3b. Cassazione
@@ -252,6 +313,7 @@
       if (c.dataValida === false) return { esito: 'ko', bloccante: true, motivo: 'La data del documento di prassi non esiste.' };
       return { esito: 'nv', motivo: 'Fonte di prassi non collegata: verifica manuale.' };
     }
+    if (c.genere === 'atto' && c.atto && c.atto.errore) return { esito: 'ko', bloccante: true, motivo: c.atto.errore + '.' };
     if (!c.atto) return { esito: 'nv', motivo: 'Atto non riconosciuto: aggiungilo al dizionario o scrivi gli estremi completi.' };
     if (c.atto.errore) return { esito: 'ko', bloccante: true, motivo: c.atto.errore + '.' };
     return null; // serve la verifica su Normattiva
@@ -391,7 +453,7 @@
       return r({ esito: 'ko', bloccante: true, motivo: 'Articolo non trovato: Normattiva restituisce l\'art. ' + artRest + ' al posto dell\'art. ' + c.articoloTesto + '.' });
     }
     if (rif.inizioVig && rif.inizioVig > dataRif) {
-      return r({ esito: 'mod', motivo: 'Alla data di riferimento (' + it(dataRif) + ') l\'articolo non era ancora vigente: in vigore dal ' + it(rif.inizioVig) + '.' });
+      return r({ esito: 'nv', motivo: 'Normattiva restituisce una versione in vigore dal ' + it(rif.inizioVig) + ', successiva alla data di riferimento (' + it(dataRif) + '): l\'articolo non esisteva ancora oppure la versione storica non è disponibile. Verifica sul link.' });
     }
 
     var parteRif = testoRif, parteOggi = oggi && !oggi.errore && oggi.trovato ? testoDaHtml(oggi.html) : null;
@@ -422,8 +484,19 @@
     });
   }
 
+  /** Atto citato senza articolo: basta che Normattiva lo trovi. */
+  function valutaAtto(c, r) {
+    var link = linkNormattiva(c.atto.urn, null);
+    if (r.errore) return { esito: 'nv', urn: c.atto.urn, link: link, motivo: 'Normattiva non raggiungibile dal plugin (' + r.errore + ').' };
+    if (r.multiplo) return { esito: 'nv', urn: c.atto.urn, link: link, motivo: 'Più atti corrispondono a questi estremi: indica la data completa.' };
+    if (!r.trovato) return c.atto.soloAnno
+      ? { esito: 'nv', urn: c.atto.urn, link: link, motivo: 'Atto non individuato con il solo anno: indica la data completa.' }
+      : { esito: 'ko', bloccante: true, urn: c.atto.urn, link: link, motivo: 'Normattiva non restituisce l\'atto indicato.' };
+    return { esito: 'ok', urn: c.atto.urn, link: link, motivo: 'L\'atto esiste in Normattiva' + (c.atto.nome ? ' (' + c.atto.nome + ')' : '') + '. Citazione senza articolo: nessun controllo di vigenza.' + (c.atto.avviso ? ' ' + c.atto.avviso + '.' : '') };
+  }
+
   return {
-    ATTI: ATTI, ESITI: ESITI,
+    ATTI: ATTI, valutaAtto: valutaAtto, leggiAttoTipizzato: leggiAttoTipizzato, ESITI: ESITI,
     estraiCitazioni: estraiCitazioni, esitoFormale: esitoFormale, valutaNorma: valutaNorma,
     urnArticolo: urnArticolo, linkNormattiva: linkNormattiva,
     testoDaHtml: testoDaHtml, articoloRestituito: articoloRestituito, estraiComma: estraiComma,
