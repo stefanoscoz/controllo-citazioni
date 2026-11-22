@@ -1,4 +1,4 @@
-# Controllo citazioni — componente aggiuntivo per Word (v0.2)
+# Controllo citazioni — componente aggiuntivo per Word (v0.2.1)
 
 Pannello laterale per Word che legge il documento, trova le citazioni e le controlla:
 
@@ -84,12 +84,12 @@ Il browser di Word blocca le chiamate verso siti che non autorizzano esplicitame
 
 Il proxy inoltra solo le richieste di dettaglio atto e non conserva dati.
 
-## 7. Aggiornare il plugin (anche dalla v0.1 alla v0.2)
-Quando cambia il **manifest** (come nella v0.2, che aggiunge il menu del tasto destro): chiudi Word, sostituisci il `manifest.xml` nella cartella `wef`, svuota la cache (vedi sotto) e riapri Word.
+## 7. Aggiornare il plugin
+1. Ricarica su GitHub i file modificati e aspetta 1–2 minuti.
+2. Se è cambiato il **manifest**, chiudi Word e sostituisci il file nella cartella `wef`.
+3. Riapri Word. I file del pannello sono richiamati con un numero di versione (`?v=…` in `taskpane.html`), così Word scarica quelli nuovi senza svuotare la cache.
 
-Modifica i file e ricaricali su GitHub. Word per Mac tiene una copia in memoria: se non vedi le modifiche, chiudi Word e svuota la cache cancellando il contenuto di:
-`~/Library/Containers/com.Microsoft.OsfWebHost/Data/`
-(il manifest nella cartella `wef` lascialo). Se cambi il manifest, ricopialo in `wef`.
+**Non svuotare la cache di Office** (`OsfWebHost`): rimuove anche gli altri componenti aggiuntivi installati dallo store, come Claude per Word ed Excel, che vanno poi reinstallati.
 
 **Debug** (vedere gli errori): da Terminale
 `defaults write com.microsoft.Word OfficeWebAddinDeveloperExtras -bool true`,

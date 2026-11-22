@@ -40,7 +40,7 @@ t('sentenza con data impossibile -> non trovata bloccante', () => {
   assert.strictEqual(c.genere, 'sentenza'); assert.strictEqual(c.dataValida, false);
   const e = CC.esitoFormale(c); assert.strictEqual(e.esito, 'ko'); assert.ok(e.bloccante);
 });
-t('alias TUIR', () => assert.strictEqual(CC.urnArticolo(cit[5]), 'urn:nir:stato:decreto.presidente.repubblica:1986-12-22;917~art96'));
+t('alias TUIR', () => assert.strictEqual(CC.urnArticolo(cit[5]), 'urn:nir:stato:decreto.del.presidente.della.repubblica:1986-12-22;917~art96'));
 t('alias c.c. (non scambiato per "comma")', () => { assert.strictEqual(cit[6].comma, undefined); assert.strictEqual(cit[6].atto.key, 'regio.decreto:262:1942'); });
 t('forma breve D.Lgs. 472/1997 completata dal dizionario + lettera a-bis', () => {
   const c = cit[7];
@@ -96,4 +96,18 @@ t('atto senza articolo: "il DPR 633/72"', () => { const c = una('il DPR 633/72 p
 t('"legge di bilancio" non è una citazione', () => assert.strictEqual(una('ai sensi della legge di bilancio').length, 0));
 t('alias cc senza punti', () => assert.strictEqual(una('art. 2423 cc')[0].atto.key, 'regio.decreto:262:1942'));
 
+console.log('Abrogazioni (testi reali restituiti da Normattiva)');
+t('articolo abrogato riconosciuto', () => { const a = CC.abrogazione(CC.testoDaHtml('<p>Art. 10</p><p>((ARTICOLO ABROGATO DAL D.LGS. 19 GENNAIO 2026, N. 10 ))</p>')); assert.strictEqual(a.cosa, 'articolo'); assert.ok(a.da.includes('19 GENNAIO 2026')); });
+t('abrogato oggi ma vigente alla data -> Modificata', () => {
+  const c = una('art. 2409 c.c.')[0];
+  const v = CC.valutaNorma(c, { trovato: true, html: '<p>Art. 2409. (Denunzia al tribunale). Se vi è fondato sospetto...</p>', inizioVig: '2004-01-01', fineVig: '2026-04-28' }, { trovato: true, html: '<p>Art. 2409. ((ARTICOLO ABROGATO DAL D.LGS. 27 MARZO 2026, N. 47 ))</p>', inizioVig: '2026-04-29' }, '2025-12-31');
+  assert.strictEqual(v.esito, 'mod'); assert.ok(v.abrogato); assert.ok(v.motivo.includes('29/04/2026'));
+});
+t('abrogato alla data -> Non trovata bloccante', () => {
+  const c = una('art. 2409 c.c.')[0];
+  const v = CC.valutaNorma(c, { trovato: true, html: '<p>Art. 2409. ((ARTICOLO ABROGATO DAL D.LGS. 27 MARZO 2026, N. 47 ))</p>', inizioVig: '2026-04-29' }, null, '2026-11-22');
+  assert.strictEqual(v.esito, 'ko'); assert.ok(v.bloccante);
+});
+t('URN dei D.P.R. nel formato Normattiva', () => assert.strictEqual(CC.urnArticolo(una('art. 10 DPR 633/72')[0]), 'urn:nir:stato:decreto.del.presidente.della.repubblica:1972-10-26;633~art10'));
+t('articolo non ancora esistente alla data -> Non trovata', () => { const v = CC.valutaNorma(una('art. 2409 c.c.')[0], { trovato: false, nonAncoraVigente: true }, null, '1940-01-01'); assert.strictEqual(v.esito, 'ko'); });
 console.log('\n' + ok + ' test superati' + (process.exitCode ? ' — CI SONO ERRORI' : ''));

@@ -60,6 +60,7 @@
       else {
         atto = atto || lista[0] || null;
         if (!atto || !atto.articoloHtml) out = { trovato: false };
+        else if (/NON ANCORA ESISTENTE O VIGENTE/i.test(atto.articoloHtml)) out = { trovato: false, nonAncoraVigente: true };
         else out = {
           trovato: true, html: atto.articoloHtml,
           inizioVig: CC.dataApi(atto.articoloDataInizioVigenza),
@@ -76,14 +77,9 @@
   }
 
   // Testo vigente alla data; se la sintassi "!vig=" non fosse accettata, riprova senza.
+  // Sempre con la data esplicita: senza data Normattiva può restituire versioni future (es. dal 2027)
   function versioneAllaData(urnArt, data) {
-    return chiamaNormattiva(urnArt + '!vig=' + data).then(function (r) {
-      if (r.trovato || r.errore || r.multiplo) return r;
-      return chiamaNormattiva(urnArt).then(function (r2) {
-        if (r2.trovato) r2 = Object.assign({}, r2, { senzaData: true });
-        return r2;
-      });
-    });
+    return chiamaNormattiva(urnArt + '!vig=' + data);
   }
 
   function verificaCitazione(c) {
@@ -102,7 +98,6 @@
       if (rif.errore || !rif.trovato) return CC.valutaNorma(c, rif, null, stato.dataRif);
       return chiamaNormattiva(urnArt + '!vig=' + oggiISO()).then(function (oggi) {
         var v = CC.valutaNorma(c, rif, oggi, stato.dataRif);
-        if (rif.senzaData) v.motivo += ' Nota: versione alla data non disponibile, confronto sulle date di vigenza.';
         return v;
       });
     });
@@ -440,7 +435,7 @@
 
   // Ricostruisce le versioni dell'articolo seguendo le date di inizio/fine vigenza restituite da Normattiva
   function versioniArticolo(urnArt, data) {
-    var MAX = 10;
+    var MAX = 16;
     return chiamataAllaData(urnArt, data).then(function (v0) {
       if (v0.errore || !v0.trovato) return { errore: v0.errore, trovato: false, multiplo: v0.multiplo };
       var elenco = [v0];
@@ -485,7 +480,10 @@
       (att.inizioVig ? 'dal ' + formatoData(att.inizioVig) : '') + (att.fineVig ? ' al ' + formatoData(att.fineVig) : ' ad oggi') + '.');
     righe.push('Versioni ricostruite: ' + r.versioni.length + (r.troncato ? '+' : '') +
       (r.versioni[0].inizioVig ? ', la prima dal ' + formatoData(r.versioni[0].inizioVig) : '') + '.');
-    if (r.versioni.length > 1 && ultima.inizioVig) righe.push('Ultima modifica in vigore dal ' + formatoData(ultima.inizioVig) + (r.attiva === r.versioni.length - 1 ? ' (è la versione applicabile).' : ': diversa dalla versione applicabile.'));
+    var abrAtt = CC.abrogazione(CC.testoDaHtml(att.html));
+    if (abrAtt) righe.push('Attenzione: alla data indicata l\'' + abrAtt.cosa + ' risulta abrogato (' + abrAtt.da + '). Consulta le versioni precedenti per il testo previgente.');
+    var abrUlt = ultima !== att ? CC.abrogazione(CC.testoDaHtml(ultima.html)) : null;
+    if (r.versioni.length > 1 && ultima.inizioVig) righe.push((abrUlt ? 'Abrogato dal ' + formatoData(ultima.inizioVig) + ' (' + abrUlt.da + ')' : 'Ultima modifica in vigore dal ' + formatoData(ultima.inizioVig)) + (ultima.inizioVig > oggiISO() ? ' — data futura.' : '.') + (r.attiva === r.versioni.length - 1 ? ' È la versione applicabile.' : ''));
     righe.push('Fonte: Normattiva (IPZS), consultata il ' + formatoData(oggiISO()) + '; testo non ufficiale.');
     return righe;
   }
@@ -533,16 +531,22 @@
       '<button type="button" class="secondario" id="btnCopiaRiep">Copia</button></div></div>';
     if (r.versioni.length > 1) {
       h += '<div class="det-blocco"><h3>Versioni dell\'articolo</h3><ul class="versioni">' + r.versioni.map(function (v, i) {
-        var periodo = (v.inizioVig ? 'dal ' + formatoData(v.inizioVig) : 'origine') + (v.fineVig ? ' al ' + formatoData(v.fineVig) : ' → oggi');
-        return '<li class="' + (i === r.attiva ? 'attiva' : '') + '"><div class="ver-testa"><strong>' + (i + 1) + '</strong><span>' + esc(periodo) + '</span>' +
-          (i === r.attiva ? '<span class="badge">al ' + esc(formatoData(data)) + '</span>' : (!v.fineVig ? '<span class="badge oggi">vigente</span>' : '')) + '</div>' +
+        var oggi = oggiISO();
+        var futura = v.inizioVig && v.inizioVig > oggi;
+        var corrente = (!v.inizioVig || v.inizioVig <= oggi) && (!v.fineVig || v.fineVig >= oggi);
+        var abr = CC.abrogazione(CC.testoDaHtml(v.html));
+        var periodo = (v.inizioVig ? 'dal ' + formatoData(v.inizioVig) : 'origine') + (v.fineVig ? ' al ' + formatoData(v.fineVig) : (futura ? '' : ' → oggi'));
+        var badges = (i === r.attiva ? '<span class="badge">al ' + esc(formatoData(data)) + '</span>' : '') +
+          (abr ? '<span class="badge" style="background:#FCE9E7;color:#B42318">abrogato</span>' : '') +
+          (futura ? '<span class="badge" style="background:#E8F0FA;color:#1D4F8C">futura</span>' : (corrente && i !== r.attiva ? '<span class="badge oggi">vigente oggi</span>' : ''));
+        return '<li class="' + (i === r.attiva ? 'attiva' : '') + '"><div class="ver-testa"><strong>' + (i + 1) + '</strong><span>' + esc(periodo) + '</span>' + badges + '</div>' +
           '<div class="ver-azioni"><button type="button" data-ver="' + i + '">Testo</button>' + (i > 0 ? '<button type="button" data-diff="' + i + '">Differenze con la ' + i + '</button>' : '') + '</div></li>';
       }).join('') + '</ul></div>';
     }
     var parte = parteDaMostrare(att.html, c);
     h += '<div class="det-blocco"><h3 id="titTesto">Testo vigente al ' + esc(formatoData(data)) + (parte.comma ? ' · comma ' + esc(c.commaTesto) : '') + '</h3><div class="estratto" id="testoVer">' + esc(parte.testo.slice(0, 6000)) + '</div></div>';
     h += '<a href="' + esc(link) + '" target="_blank" rel="noopener">Apri su Normattiva</a>';
-    h += '<p class="aiuto">Le versioni sono ricostruite dalle date di vigenza fornite da Normattiva (max 10). Fonte: Normattiva (IPZS), testo non ufficiale.</p></div>';
+    h += '<p class="aiuto">Le versioni sono ricostruite dalle date di vigenza fornite da Normattiva (max 16). Fonte: Normattiva (IPZS), testo non ufficiale.</p></div>';
     out.innerHTML = h;
   }
 

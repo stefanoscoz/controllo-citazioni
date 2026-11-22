@@ -162,7 +162,9 @@
     var parti = key.split(':');
     tipo = tipo || parti[0]; numero = numero || parseInt(parti[1], 10); anno = anno || parseInt(parti[2], 10);
     var data = dataTesto || (noto && noto.data) || null;
-    var urn = 'urn:nir:stato:' + tipo + ':' + (data || anno) + ';' + numero + (noto && noto.allegato ? ':' + noto.allegato : '');
+    // Normattiva usa "decreto.del.presidente.della.repubblica" negli URN dei D.P.R. (verificato sull'API)
+    var tipoUrnNir = tipo === 'decreto.presidente.repubblica' ? 'decreto.del.presidente.della.repubblica' : tipo;
+    var urn = 'urn:nir:stato:' + tipoUrnNir + ':' + (data || anno) + ';' + numero + (noto && noto.allegato ? ':' + noto.allegato : '');
     var avviso = null;
     if (dataTesto && noto && noto.data !== dataTesto) avviso = 'La data indicata non coincide con quella dell\'atto in archivio (' + noto.data.split('-').reverse().join('/') + ')';
     return {
@@ -345,6 +347,15 @@
       .trim();
   }
 
+  /** "((ARTICOLO ABROGATO DAL D.LGS. 19 GENNAIO 2026, N. 10))" -> { cosa: 'articolo', da: 'D.LGS. 19 GENNAIO 2026, N. 10' } */
+  function abrogazione(testo) {
+    var m = /\(\(\s*(ARTICOLO|PROVVEDIMENTO|COMMA|CAPO|TITOLO)\s+ABROGAT[OA]\s+(?:DAL(?:LA|L['’])?|DA)\s*([^)]*?)\s*\)\)/i.exec(testo || '');
+    if (!m) return null;
+    var corpo = String(testo).replace(m[0], '').replace(/Art(?:icolo)?\.?\s*\d+[a-z-]*\.?/i, '').trim();
+    if (corpo.length > 400) return null; // l'abrogazione riguarda solo una parte del testo
+    return { cosa: m[1].toLowerCase(), da: m[2].replace(/\s+,/g, ',').trim() };
+  }
+
   /** Numero dell'articolo letto nell'intestazione del testo ("Art. 16-bis") */
   function articoloRestituito(testo) {
     var m = new RegExp('Art(?:icolo)?\\.?\\s*(\\d+(?:[\\s-]?' + LATINI + ')?)', 'i').exec(testo || '');
@@ -442,6 +453,9 @@
 
     if (rif.errore) return r({ esito: 'nv', motivo: 'Normattiva non raggiungibile dal plugin (' + rif.errore + '). Apri il link per verificare.' });
     if (rif.multiplo) return r({ esito: 'nv', motivo: 'Normattiva restituisce più atti per questi estremi: indica la data completa dell\'atto.' });
+    if (!rif.trovato && rif.nonAncoraVigente) {
+      return r({ esito: 'ko', bloccante: true, motivo: 'Alla data di riferimento (' + it(dataRif) + ') l\'articolo non esisteva ancora o non era vigente (Normattiva).' });
+    }
     if (!rif.trovato) {
       if (c.atto.soloAnno) return r({ esito: 'nv', motivo: 'Atto non individuato con il solo anno: indica la data completa.' });
       return r({ esito: 'ko', bloccante: true, motivo: 'Normattiva non restituisce l\'atto o l\'articolo indicato.' });
@@ -456,7 +470,16 @@
       return r({ esito: 'nv', motivo: 'Normattiva restituisce una versione in vigore dal ' + it(rif.inizioVig) + ', successiva alla data di riferimento (' + it(dataRif) + '): l\'articolo non esisteva ancora oppure la versione storica non è disponibile. Verifica sul link.' });
     }
 
-    var parteRif = testoRif, parteOggi = oggi && !oggi.errore && oggi.trovato ? testoDaHtml(oggi.html) : null;
+    var abrRif = abrogazione(testoRif);
+    if (abrRif) {
+      return r({ esito: 'ko', bloccante: true, abrogato: true, motivo: 'Alla data di riferimento (' + it(dataRif) + ') l\'' + abrRif.cosa + ' risulta abrogato' + (abrRif.da ? ' (' + abrRif.da + ')' : '') + (rif.inizioVig ? ', dal ' + it(rif.inizioVig) : '') + '.' });
+    }
+    var testoOggiIntero = oggi && !oggi.errore && oggi.trovato ? testoDaHtml(oggi.html) : null;
+    var abrOggi = abrogazione(testoOggiIntero);
+    if (abrOggi) {
+      return r({ esito: 'mod', abrogato: true, motivo: 'Vigente al ' + it(dataRif) + ', ma oggi l\'' + abrOggi.cosa + ' risulta abrogato' + (abrOggi.da ? ' (' + abrOggi.da + ')' : '') + (oggi.inizioVig ? ', dal ' + it(oggi.inizioVig) : '') + '. Verifica quale testo si applica.', estrattoRif: c.comma ? (estraiComma(testoRif, c.comma) || testoRif) : testoRif });
+    }
+    var parteRif = testoRif, parteOggi = testoOggiIntero;
     var note = [];
     if (c.comma) {
       var cr = estraiComma(testoRif, c.comma);
@@ -499,7 +522,7 @@
     ATTI: ATTI, valutaAtto: valutaAtto, leggiAttoTipizzato: leggiAttoTipizzato, ESITI: ESITI,
     estraiCitazioni: estraiCitazioni, esitoFormale: esitoFormale, valutaNorma: valutaNorma,
     urnArticolo: urnArticolo, linkNormattiva: linkNormattiva,
-    testoDaHtml: testoDaHtml, articoloRestituito: articoloRestituito, estraiComma: estraiComma,
+    testoDaHtml: testoDaHtml, articoloRestituito: articoloRestituito, abrogazione: abrogazione, estraiComma: estraiComma,
     contieneLettera: contieneLettera, confrontaParole: confrontaParole, dataApi: dataApi,
     suggerisciDataRiferimento: suggerisciDataRiferimento, dataValida: dataValida
   };
